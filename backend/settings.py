@@ -92,9 +92,9 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:5174",
-    "assessment-portal-psi.vercel.app",
-    "assessment-portal-git-main-kavin0047s-projects.vercel.app",
-    "assessment-portal-o9e1gzej3-kavin0047s-projects.vercel.app",
+    "https://assessment-portal-psi.vercel.app",
+    "https://assessment-portal-git-main-kavin0047s-projects.vercel.app",
+    "https://assessment-portal-o9e1gzej3-kavin0047s-projects.vercel.app",
 
 # Add the origin of your frontend application
 ]   
