@@ -1214,15 +1214,11 @@ def fetch_mcq_assessments(request):
         if not isinstance(staff_id, str) or not staff_id.strip():
             raise AuthenticationFailed("Invalid staff ID in token payload.")
 
-        staff_collection = db['staff']
         staff_user = staff_collection.find_one({"_id": ObjectId(staff_id)}, {"role": 1, "department": 1, "collegename": 1})
         if not staff_user:
             raise AuthenticationFailed("Staff user not found.")
 
         role, department, collegename = staff_user.get("role"), staff_user.get("department"), staff_user.get("collegename")
-        mcq_collection = db['MCQ_Assessment_Data']
-        
-        # Define query based on validated role
         role_based_queries = {
             "Staff": {"staffId": staff_id},
             "HOD": {"department": department},
@@ -1230,19 +1226,17 @@ def fetch_mcq_assessments(request):
             "Admin": {},  # SuperAdmin sees all
         }
 
-        # Ensure the role is one of the expected ones to prevent privilege escalation
         if role not in role_based_queries:
             return Response({"error": "Unauthorized role access attempt."}, status=403)
 
         query = role_based_queries[role]
-
         projection = {
             "_id": 1, "contestId": 1, "assessmentOverview.name": 1, "assessmentOverview.registrationStart": 1,
             "assessmentOverview.registrationEnd": 1, "visible_to": 1, "student_details": 1,
             "testConfiguration.questions": 1, "testConfiguration.duration": 1, "staffId": 1, "Overall_Status": 1
         }
         assessments_cursor = mcq_collection.find(query, projection).batch_size(100)
-        
+
         assessments = []
         current_time = datetime.utcnow().replace(tzinfo=timezone.utc)
 
@@ -1309,13 +1303,12 @@ def fetch_mcq_assessments(request):
             "assessments": assessments,
             "total": len(assessments)
         })
-        
+
         # Add cache headers to prevent caching
         return add_no_cache_headers(response)
 
     except Exception as e:
         return Response({"error": str(e)}, status=500)
-
 
 
 @api_view(["GET", "PUT"])
@@ -1327,12 +1320,10 @@ def get_staff_profile(request):
     PUT: Update staff profile details (only the logged-in user can modify their own profile).
     """
     try:
-        # Check if JWT token exists and is not empty
         jwt_token = request.COOKIES.get("jwt", "").strip()
         if not jwt_token:
             return Response({"error": "Authentication credentials were not provided."}, status=401)
 
-        # Decode JWT token safely
         try:
             decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         except jwt.ExpiredSignatureError:
@@ -1344,23 +1335,11 @@ def get_staff_profile(request):
         if not staff_id:
             return Response({"error": "Invalid token payload."}, status=401)
 
-        # Generate a cache key for this staff user
-        cache_key = f"staff_profile_{staff_id}"
-
-        # Check cache for GET requests
         if request.method == "GET":
-            cached_data = cache.get(cache_key)
-            if cached_data:
-                response = Response(cached_data, status=200)
-                return add_no_cache_headers(response)
+            staff = staff_collection.find_one({"_id": ObjectId(staff_id)})
+            if not staff:
+                return Response({"error": "Staff not found"}, status=404)
 
-        # Fetch the staff details from MongoDB using ObjectId
-        staff = staff_collection.find_one({"_id": ObjectId(staff_id)})
-        if not staff:
-            return Response({"error": "Staff not found"}, status=404)
-
-        # Handle GET request
-        if request.method == "GET":
             staff_details = {
                 "name": staff.get("full_name"),
                 "email": staff.get("email"),
@@ -1369,54 +1348,24 @@ def get_staff_profile(request):
                 "profileImage": staff.get("profileImageBase64"),
                 "lastUpdated": datetime.now().isoformat()
             }
-            
-            # Cache the result for 5 minutes
-            cache.set(cache_key, staff_details, 300)
-            
+
             response = Response(staff_details, status=200)
             return add_no_cache_headers(response)
 
-        # Handle PUT request (Ensure user can only update their own profile)
-        if request.method == "PUT":
+        elif request.method == "PUT":
             data = request.data
-            update_fields = {}
-            
-            # Map request field names to database field names
-            field_mapping = {
-                "name": "full_name",
-                "email": "email",
-                "department": "department",
-                "collegename": "collegename"
-            }
-            
-            # Build update dictionary
-            for field, db_field in field_mapping.items():
-                if field in data and data[field]:
-                    update_fields[db_field] = data[field]
+            update_fields = {key: value for key, value in data.items() if key in ["name", "email", "department", "collegename"]}
 
             if update_fields:
-                # Ensure the JWT staff ID matches the staff ID in the database
-                if ObjectId(staff_id) != staff["_id"]:
-                    return Response({"error": "Unauthorized: You can only update your own profile."}, status=403)
-
-                # Add timestamp for the update
-                update_fields["updated_at"] = datetime.now()
-                
-                # Update in database
-                staff_collection.update_one({"_id": staff["_id"]}, {"$set": update_fields})
-                
-                # Invalidate cache
-                cache.delete(cache_key)
-                
-                response = Response({"message": "Profile updated successfully"}, status=200)
-                return add_no_cache_headers(response)
+                staff_collection.update_one({"_id": ObjectId(staff_id)}, {"$set": update_fields})
+                return add_no_cache_headers(Response({"message": "Profile updated successfully"}, status=200))
 
             return Response({"error": "No valid fields provided for update"}, status=400)
 
     except Exception as e:
         logger.error(f"Unexpected error in get_staff_profile: {e}")
         return Response({"error": "An unexpected error occurred"}, status=500)
-
+    
 @api_view(["DELETE"])
 @permission_classes([AllowAny])
 @authentication_classes([])
