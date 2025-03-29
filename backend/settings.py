@@ -167,22 +167,16 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # CORS_ALLOW_ALL_ORIGINS = True
 
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',  # If using token-based auth
-    ],
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.AllowAny',
-    ],
-}
-
-REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'rest_framework.authentication.TokenAuthentication', 
+        'rest_framework.authentication.SessionAuthentication',# Token-based authentication
+        'rest_framework_simplejwt.authentication.JWTAuthentication',  # JWT authentication
     ),
     'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.IsAuthenticated',
+        'rest_framework.permissions.IsAuthenticated',  # Enforce authentication
     ),
 }
+
 CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://localhost:8000', 'https://portal-sigma-lac.vercel.app/', "http://localhost:5173", "http://localhost:5174","https://assessment-portal-psi.vercel.app", "https://assessment-portal-git-main-kavin0047s-projects.vercel.app","https://assessment-portal-o9e1gzej3-kavin0047s-projects.vercel.app","https://assessmentbackend-production.up.railway.app",]
 CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://localhost:8000', 'https://portal-sigma-lac.vercel.app/', "http://localhost:5173", "http://localhost:5174","https://assessment-portal-psi.vercel.app", "https://assessment-portal-git-main-kavin0047s-projects.vercel.app","https://assessment-portal-o9e1gzej3-kavin0047s-projects.vercel.app","https://assessmentbackend-production.up.railway.app",]
 CORS_ALLOW_CREDENTIALS = True
