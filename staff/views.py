@@ -345,139 +345,119 @@ Errors:
 @permission_classes([AllowAny])
 def staff_login(request):
     """
-Handles staff login using email and password.
-
-1. Validates email and password and checks if the user exists.
-2. Verifies the password and generates authentication tokens.
-3. Returns user details, authentication tokens, and role if login is successful.
-
-Errors:
-- 400: Missing email or password.
-- 401: Incorrect email or password.
-- 500: Server error.
-"""
-
+    Handles staff login using email and password.
+    1. Validates email and password and checks if the user exists.
+    2. Verifies the password and generates authentication tokens.
+    3. Returns user details, authentication tokens, and role if login is successful.
+    Errors:
+    - 400: Missing email or password.
+    - 401: Incorrect email or password.
+    - 429: Account temporarily locked.
+    - 500: Server error.
+    """
     try:
         data = request.data
         email = data.get("email")
         password = data.get("password")
-
         # Validate input
         if not email or not password:
             logger.warning(f"Login failed: Missing email or password")
-            return Response(
-                {"error": "Email and password are required"},
-                status=400
-            )
-
+            return Response({"error": "Email and password are required"}, status=400)
         # Fetch staff user from MongoDB
         staff_user = db['staff'].find_one({"email": email})
         if not staff_user:
             logger.warning(f"Login failed: User with email {email} not found")
             return Response({"error": "Invalid email or password"}, status=401)
-            
         # Check if account is locked
         lockout_info = staff_user.get("lockout_info", {})
         lockout_until = lockout_info.get("lockout_until")
-        
         if lockout_until:
             lockout_time = datetime.fromisoformat(lockout_until) if isinstance(lockout_until, str) else lockout_until
             now = datetime.now()
             if now < lockout_time:
-                # Account is locked
                 remaining_seconds = int((lockout_time - now).total_seconds())
                 return Response({
-                    "error": "Account temporarily locked due to too many failed login attempts", 
+                    "error": "Account temporarily locked due to too many failed login attempts",
                     "lockout_time": remaining_seconds
                 }, status=429)
-                
         # Check password hash
         stored_password = staff_user.get("password")
-        
-        # If password is incorrect - handle failed attempt
         if not check_password(password, stored_password):
             logger.warning(f"Login failed: Incorrect password for {email}")
-            
             # Increment attempt counter
             attempts = lockout_info.get("attempts", 0) + 1
             lockout_info = {"attempts": attempts, "lockout_until": None}
-            
-            # If 5 attempts reached, lock the account
             if attempts >= 5:
                 lockout_until = datetime.now() + timedelta(minutes=2)
                 lockout_info["lockout_until"] = lockout_until.isoformat()
-                
-                # Update the document with lockout information
                 db['staff'].update_one(
                     {"email": email},
                     {"$set": {"lockout_info": lockout_info}}
                 )
-                
                 return Response({
-                    "error": "Account temporarily locked due to too many failed login attempts", 
+                    "error": "Account temporarily locked due to too many failed login attempts",
                     "lockout_time": 300  # 5 minutes in seconds
                 }, status=429)
-            
-            # Update the failed attempts count
             db['staff'].update_one(
                 {"email": email},
                 {"$set": {"lockout_info": lockout_info}}
             )
-            
             return Response({"error": "Invalid email or password"}, status=401)
-
         # Password is correct, reset lockout information if any
         if lockout_info.get("attempts", 0) > 0:
             db['staff'].update_one(
                 {"email": email},
                 {"$set": {"lockout_info": {"attempts": 0, "lockout_until": None}}}
             )
-
         # Generate tokens
         staff_id = str(staff_user["_id"])
         tokens = generate_tokens_for_staff(staff_id)
-
-        # Create response
-        response = Response({
+        # Get name from appropriate field based on your database structure
+        staff_name = staff_user.get("full_name", email.split('@')[0])
+        # Create response with profile picture if available
+        response_data = {
             "message": "Login successful",
             "tokens": tokens,
-            "staffId": staff_id,
-            "name": staff_user.get("full_name"),
-            "email": staff_user.get("email"),
-            "department": staff_user.get("department"),
-            "collegename": staff_user.get("collegename"),
-            "role": staff_user.get("role"),  # Added role to the response
-        }, status=200)
-
-        # Set secure cookie for JWT
+            "name": staff_name,
+            "email": email,
+            "role": staff_user.get("role"),
+            "dept": staff_user.get("department", staff_user.get("dept")),
+        }
+        response = Response(response_data)
+        # Set cookies
+        jwt_token = tokens.get("jwt", list(tokens.values())[0])
         response.set_cookie(
             key='jwt',
-            value=tokens['jwt'],
+            value=jwt_token,
             httponly=True,
             samesite='Lax',
-            path="/",      # Ensure the cookie is sent for all routes
             secure=os.getenv("ENV") == "production",
-            max_age=1 * 24 * 60 * 60  # 1 day expiration
+            max_age=1 * 24 * 60 * 60
         )
-        
         response.set_cookie(
-            key='name',
-            value=staff_user.get("full_name"),
-            samesite='None',
-            path="/",  # Ensure the cookie is sent for all routes
-            max_age=1 * 24 * 60 * 60  # 1 day expiration
+            key='username',
+            value=staff_name,
+            samesite='Lax',
+            secure=os.getenv("ENV") == "production",
+            max_age=1 * 24 * 60 * 60
         )
-
         logger.info(f"Login successful for staff: {email}")
-        
         return response
-
     except Exception as e:
         logger.error(f"Error during staff login: {str(e)}")
         return Response(
             {"error": "Something went wrong. Please try again later."},
             status=500
         )
+
+
+
+
+
+
+
+
+
 
 
 from rest_framework.decorators import api_view, permission_classes
