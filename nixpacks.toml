@@ -9,4 +9,4 @@ cmds = [
 ]
 
 [start]
-cmd = "gunicorn --workers 4 --bind 0.0.0.0:8000 backend.wsgi:application"
+cmd = "gunicorn --workers 9 --timeout 120 --bind 0.0.0.0:8000 backend.wsgi:application"
