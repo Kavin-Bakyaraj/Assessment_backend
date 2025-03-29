@@ -48,34 +48,6 @@ logger = logging.getLogger(__name__)
 JWT_SECRET = 'test'
 JWT_ALGORITHM = "HS256"
 
-def validate_jwt_token(request):
-    """
-    Validates the JWT token from the request cookies.
-    Returns the decoded token payload if valid, or raises an AuthenticationFailed exception.
-    """
-    jwt_token = request.COOKIES.get("jwt", "").strip()
-    if not jwt_token:
-        raise AuthenticationFailed("Authentication credentials were not provided.")
-
-    try:
-        decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except jwt.ExpiredSignatureError:
-        raise AuthenticationFailed("Access token has expired. Please log in again.")
-    except jwt.InvalidTokenError:
-        raise AuthenticationFailed("Invalid token. Please log in again.")
-
-    staff_id = decoded_token.get("staff_user")
-    if not staff_id:
-        raise AuthenticationFailed("Invalid token payload.")
-
-    return decoded_token
-def add_no_cache_headers(response):
-    """Add headers to prevent browser caching"""
-    response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    response['Pragma'] = 'no-cache'  
-    response['Expires'] = '0'
-    return response
-
 def generate_tokens_for_staff(staff_user):
     """
     Generate tokens for authentication. Modify this with JWT implementation if needed.
@@ -1112,6 +1084,16 @@ def fetch_student_stats(request):
 def fetch_contests(request):
     """
     Fetch contests created by the logged-in admin.
+
+    This endpoint:
+    - Authenticates the admin using a JWT token.
+    - Retrieves contests associated with the staff user.
+    - Determines the contest status (Upcoming, Live, Completed).
+    - Returns contest details including start date, end date, and assigned users.
+
+    Errors:
+    - 401: Token is expired or invalid.
+    - 500: Server error if data retrieval fails.
     """
     try:
         jwt_token = request.COOKIES.get("jwt")
@@ -1134,13 +1116,17 @@ def fetch_contests(request):
         coding_assessments = db['coding_assessments']
         current_date = datetime.utcnow().replace(tzinfo=timezone.utc).date()
 
-        # Filter contests by staffId directly in MongoDB query
+        # **Filter contests by staffId directly in MongoDB query**
         contests_cursor = coding_assessments.find({"staffId": staff_id})
 
         contests = []
         for contest in contests_cursor:
-            visible_to_users = contest.get("visible_to", [])
+            visible_to_users = contest.get("visible_to", [])  # Fetch the visible_to array
+
+            # Handle missing `assessmentOverview` safely
             assessment_overview = contest.get("assessmentOverview", {})
+
+            # Extract fields safely using `.get()`
             start_date = assessment_overview.get("registrationStart")
             end_date = assessment_overview.get("registrationEnd")
             assessment_name = assessment_overview.get("name", "Unnamed Contest")
@@ -1171,13 +1157,10 @@ def fetch_contests(request):
                 "assignedCount": len(visible_to_users),
             })
 
-        response = Response({
+        return Response({
             "contests": contests,
             "total": len(contests)
         })
-        
-        # Add cache control headers
-        return add_no_cache_headers(response)
 
     except jwt.ExpiredSignatureError:
         return Response({"error": "Token has expired"}, status=401)
@@ -1186,6 +1169,7 @@ def fetch_contests(request):
     except Exception as e:
         logger.error(f"Error fetching contests: {e}")
         return Response({"error": "Something went wrong. Please try again later."}, status=500)
+
 
 from datetime import datetime, timezone
 import jwt
@@ -1216,17 +1200,37 @@ def get_completed_count(contest_id):
 @permission_classes([AllowAny])
 def fetch_mcq_assessments(request):
     """
-    Fetch MCQ assessments based on staff role
+    Fetch MCQ assessments based on staff role:
+    - Staff: Can only see their own assessments
+    - HOD: Can see assessments created for their department
+    - Principal: Can see assessments for their entire college
+    - SuperAdmin: Can see all assessments
     """
     try:
-        decoded_token = validate_jwt_token(request)
-        staff_id = decoded_token.get("staff_user")
+        jwt_token = request.COOKIES.get("jwt")
+        if not jwt_token:
+            raise AuthenticationFailed("Authentication credentials were not provided.")
 
+        try:
+            decoded_token = jwt.decode(jwt_token, 'test', algorithms=["HS256"])
+        except jwt.ExpiredSignatureError:
+            raise AuthenticationFailed("Access token has expired. Please log in again.")
+        except jwt.InvalidTokenError:
+            raise AuthenticationFailed("Invalid token. Please log in again.")
+
+        staff_id = decoded_token.get("staff_user")
+        if not isinstance(staff_id, str) or not staff_id.strip():
+            raise AuthenticationFailed("Invalid staff ID in token payload.")
+
+        staff_collection = db['staff']
         staff_user = staff_collection.find_one({"_id": ObjectId(staff_id)}, {"role": 1, "department": 1, "collegename": 1})
         if not staff_user:
             raise AuthenticationFailed("Staff user not found.")
 
         role, department, collegename = staff_user.get("role"), staff_user.get("department"), staff_user.get("collegename")
+        mcq_collection = db['MCQ_Assessment_Data']
+        
+        # Define query based on validated role
         role_based_queries = {
             "Staff": {"staffId": staff_id},
             "HOD": {"department": department},
@@ -1234,27 +1238,92 @@ def fetch_mcq_assessments(request):
             "Admin": {},  # SuperAdmin sees all
         }
 
+        # Ensure the role is one of the expected ones to prevent privilege escalation
         if role not in role_based_queries:
             return Response({"error": "Unauthorized role access attempt."}, status=403)
 
         query = role_based_queries[role]
+
+
         projection = {
             "_id": 1, "contestId": 1, "assessmentOverview.name": 1, "assessmentOverview.registrationStart": 1,
-            "assessmentOverview.registrationEnd": 1, "visible_to": 1, "testConfiguration.questions": 1,
-            "testConfiguration.duration": 1, "staffId": 1, "Overall_Status": 1
+            "assessmentOverview.registrationEnd": 1, "visible_to": 1, "student_details": 1,
+            "testConfiguration.questions": 1, "testConfiguration.duration": 1, "staffId": 1, "Overall_Status": 1
         }
-        assessments_cursor = mcq_collection.find(query, projection)
-
+        assessments_cursor = mcq_collection.find(query, projection).batch_size(100)
+        
         assessments = []
-        for assessment in assessments_cursor:
-            assessment["_id"] = str(assessment["_id"])  # Convert ObjectId to string
-            assessments.append(assessment)
+        current_time = datetime.utcnow().replace(tzinfo=timezone.utc)
 
-        return Response({"assessments": assessments, "total": len(assessments)}, status=200)
+        def process_assessment(assessment):
+            if "visible_to" not in assessment or "questions" not in assessment.get("testConfiguration", {}):
+                return None
+
+            registration_start = assessment.get("assessmentOverview", {}).get("registrationStart")
+            registration_end = assessment.get("assessmentOverview", {}).get("registrationEnd")
+            visible_users = assessment.get("visible_to", [])
+            student_details = assessment.get("student_details", [])
+            yet_to_start_count = sum(1 for student in student_details if student.get("status", "").lower() == "yet to start")
+
+            if registration_start:
+                registration_start = datetime.fromisoformat(registration_start) if isinstance(registration_start, str) else registration_start
+                if registration_start.tzinfo is None:
+                    registration_start = registration_start.replace(tzinfo=timezone.utc)
+
+            if registration_end:
+                registration_end = datetime.fromisoformat(registration_end) if isinstance(registration_end, str) else registration_end
+                if registration_end.tzinfo is None:
+                    registration_end = registration_end.replace(tzinfo=timezone.utc)
+
+            overall_status = assessment.get("Overall_Status")
+            if overall_status == "closed":
+                status = "Closed"
+            else:
+                if registration_start and registration_end:
+                    if current_time < registration_start:
+                        status = "Upcoming"
+                    elif registration_start <= current_time <= registration_end:
+                        status = "Live"
+                    elif current_time > registration_end:
+                        status = "Completed"
+                    else:
+                        status = "Unknown"
+                else:
+                    status = "Date Unavailable"
+
+            contest_id = assessment.get("contestId")
+            completed_count = get_completed_count(contest_id) if contest_id else 0
+
+            return {
+                "_id": str(assessment.get("_id")),
+                "contestId": assessment.get("contestId"),
+                "name": assessment.get("assessmentOverview", {}).get("name"),
+                "registrationStart": registration_start,
+                "endDate": registration_end,
+                "type": "MCQ",
+                "category": "Technical",
+                "questions": assessment.get("testConfiguration", {}).get("questions"),
+                "duration": assessment.get("testConfiguration", {}).get("duration"),
+                "status": status,
+                "assignedCount": len(visible_users),
+                "completedCount": completed_count,
+                "yetToStartCount": yet_to_start_count,
+                "createdBy": assessment.get("staffId"),
+            }
+
+        with ThreadPoolExecutor() as executor:
+            assessments = list(filter(None, executor.map(process_assessment, assessments_cursor)))
+
+        return Response({
+            "assessments": assessments,
+            "total": len(assessments)
+        })
 
     except Exception as e:
         return Response({"error": str(e)}, status=500)
-    
+
+
+
 
 @api_view(["GET", "PUT"])
 @permission_classes([AllowAny])
@@ -1265,23 +1334,85 @@ def get_staff_profile(request):
     PUT: Update staff profile details (only the logged-in user can modify their own profile).
     """
     try:
-        decoded_token = validate_jwt_token(request)
+        # Check if JWT token exists and is not empty
+        jwt_token = request.COOKIES.get("jwt", "").strip()
+        if not jwt_token:
+            return Response({"error": "Authentication credentials were not provided."}, status=401)
+
+        # Decode JWT token safely
+        try:
+            decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        except jwt.ExpiredSignatureError:
+            return Response({"error": "Access token has expired. Please log in again."}, status=401)
+        except jwt.InvalidTokenError:
+            return Response({"error": "Invalid token. Please log in again."}, status=401)
+
         staff_id = decoded_token.get("staff_user")
+        if not staff_id:
+            return Response({"error": "Invalid token payload."}, status=401)
 
+        # Generate a cache key for this staff user
+        cache_key = f"staff_profile_{staff_id}"
+
+        # Check cache for GET requests
         if request.method == "GET":
-            staff = staff_collection.find_one({"_id": ObjectId(staff_id)}, {"password": 0})  # Exclude sensitive fields
-            if not staff:
-                return Response({"error": "Staff not found"}, status=404)
+            cached_data = cache.get(cache_key)
+            if cached_data:
+                return Response(cached_data, status=200)
 
-            staff["_id"] = str(staff["_id"])  # Convert ObjectId to string
-            return Response(staff, status=200)
+        # Fetch the staff details from MongoDB using ObjectId
+        staff = staff_collection.find_one({"_id": ObjectId(staff_id)})
+        if not staff:
+            return Response({"error": "Staff not found"}, status=404)
 
-        elif request.method == "PUT":
-            data = request.data
-            update_fields = {key: value for key, value in data.items() if key in ["name", "email", "department", "collegename"]}
+        # Handle GET request
+        if request.method == "GET":
+            staff_details = {
+                "name": staff.get("full_name"),
+                "email": staff.get("email"),
+                "department": staff.get("department"),
+                "collegename": staff.get("collegename"),
+                "profileImage": staff.get("profileImageBase64"),
+                "lastUpdated": datetime.now().isoformat()
+            }
+            
+            # Cache the result for 5 minutes
+            cache.set(cache_key, staff_details, 300)
+            
+            return Response(staff_details, status=200)
+
+        # Handle PUT request (Ensure user can only update their own profile)
+        if request.method == "PUT":
+            data = request.data  # Extract new data from request body
+            update_fields = {}
+            
+            # Map request field names to database field names
+            field_mapping = {
+                "name": "full_name",
+                "email": "email",
+                "department": "department",
+                "collegename": "collegename"
+            }
+            
+            # Build update dictionary
+            for field, db_field in field_mapping.items():
+                if field in data and data[field]:
+                    update_fields[db_field] = data[field]
 
             if update_fields:
-                staff_collection.update_one({"_id": ObjectId(staff_id)}, {"$set": update_fields})
+                # Ensure the JWT staff ID matches the staff ID in the database
+                if ObjectId(staff_id) != staff["_id"]:
+                    return Response({"error": "Unauthorized: You can only update your own profile."}, status=403)
+
+                # Add timestamp for the update
+                update_fields["updated_at"] = datetime.now()
+                
+                # Update in database
+                staff_collection.update_one({"_id": staff["_id"]}, {"$set": update_fields})
+                
+                # Invalidate cache
+                cache.delete(cache_key)
+                
                 return Response({"message": "Profile updated successfully"}, status=200)
 
             return Response({"error": "No valid fields provided for update"}, status=400)
@@ -1289,7 +1420,8 @@ def get_staff_profile(request):
     except Exception as e:
         logger.error(f"Unexpected error in get_staff_profile: {e}")
         return Response({"error": "An unexpected error occurred"}, status=500)
-        
+
+
 @api_view(["DELETE"])
 @permission_classes([AllowAny])
 @authentication_classes([])
@@ -1298,25 +1430,51 @@ def remove_student_visibility(request, contestId, regno):
     DELETE: Remove a student's visibility from an MCQ assessment.
     """
     try:
-        decoded_token = validate_jwt_token(request)
+        # Validate inputs
+        if not isinstance(contestId, str) or not contestId.strip():
+            return Response({"error": "Invalid contestId"}, status=400)
+
+        if not isinstance(regno, str) or not regno.strip():
+            return Response({"error": "Invalid regno"}, status=400)
+
+        # Extract JWT token from cookies
+        jwt_token = request.COOKIES.get("jwt")
+        if not jwt_token:
+            raise AuthenticationFailed("Authentication credentials were not provided.")
+
+        # Decode JWT token safely
+        try:
+            decoded_token = jwt.decode(jwt_token, 'test', algorithms=["HS256"])
+        except jwt.ExpiredSignatureError:
+            raise AuthenticationFailed("Access token has expired. Please log in again.")
+        except jwt.InvalidTokenError:
+            raise AuthenticationFailed("Invalid token. Please log in again.")
+
         staff_id = decoded_token.get("staff_user")
+        if not staff_id:
+            raise AuthenticationFailed("Invalid token payload.")
 
-        if not contestId.strip() or not regno.strip():
-            return Response({"error": "Invalid contestId or regno"}, status=400)
-
+        # Fetch the MCQ assessment details using the contestId
         mcq_details = mcq_collection.find_one({"contestId": contestId})
         if not mcq_details:
             return Response({"error": "MCQ Assessment not found"}, status=404)
 
+        # Verify if the requesting staff member is the creator of the assessment
         if mcq_details.get("staffId") != staff_id:
             return Response({"error": "Unauthorized: You can only modify your own assessments."}, status=403)
 
+        # Check if the student is in the visible_to array or student_details
+        if regno not in mcq_details.get("visible_to", []) and \
+           not any(student["regno"] == regno for student in mcq_details.get("student_details", [])):
+            return Response({"error": "Student not found in the assessment"}, status=404)
+
+        # Remove the student from both `visible_to` and `student_details`
         mcq_collection.update_one(
             {"contestId": contestId},
             {
                 "$pull": {
                     "visible_to": regno,
-                    "student_details": {"regno": regno}
+                    "student_details": {"regno": regno}  # Removes student from `student_details`
                 }
             }
         )
@@ -1327,6 +1485,7 @@ def remove_student_visibility(request, contestId, regno):
         return Response({"error": str(auth_err)}, status=401)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
+
 
 
 
