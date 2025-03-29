@@ -48,6 +48,14 @@ logger = logging.getLogger(__name__)
 JWT_SECRET = 'test'
 JWT_ALGORITHM = "HS256"
 
+
+def add_no_cache_headers(response):
+    """Add headers to prevent browser caching"""
+    response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response['Pragma'] = 'no-cache'  
+    response['Expires'] = '0'
+    return response
+
 def generate_tokens_for_staff(staff_user):
     """
     Generate tokens for authentication. Modify this with JWT implementation if needed.
@@ -1084,16 +1092,6 @@ def fetch_student_stats(request):
 def fetch_contests(request):
     """
     Fetch contests created by the logged-in admin.
-
-    This endpoint:
-    - Authenticates the admin using a JWT token.
-    - Retrieves contests associated with the staff user.
-    - Determines the contest status (Upcoming, Live, Completed).
-    - Returns contest details including start date, end date, and assigned users.
-
-    Errors:
-    - 401: Token is expired or invalid.
-    - 500: Server error if data retrieval fails.
     """
     try:
         jwt_token = request.COOKIES.get("jwt")
@@ -1116,17 +1114,13 @@ def fetch_contests(request):
         coding_assessments = db['coding_assessments']
         current_date = datetime.utcnow().replace(tzinfo=timezone.utc).date()
 
-        # **Filter contests by staffId directly in MongoDB query**
+        # Filter contests by staffId directly in MongoDB query
         contests_cursor = coding_assessments.find({"staffId": staff_id})
 
         contests = []
         for contest in contests_cursor:
-            visible_to_users = contest.get("visible_to", [])  # Fetch the visible_to array
-
-            # Handle missing `assessmentOverview` safely
+            visible_to_users = contest.get("visible_to", [])
             assessment_overview = contest.get("assessmentOverview", {})
-
-            # Extract fields safely using `.get()`
             start_date = assessment_overview.get("registrationStart")
             end_date = assessment_overview.get("registrationEnd")
             assessment_name = assessment_overview.get("name", "Unnamed Contest")
@@ -1157,10 +1151,13 @@ def fetch_contests(request):
                 "assignedCount": len(visible_to_users),
             })
 
-        return Response({
+        response = Response({
             "contests": contests,
             "total": len(contests)
         })
+        
+        # Add cache control headers
+        return add_no_cache_headers(response)
 
     except jwt.ExpiredSignatureError:
         return Response({"error": "Token has expired"}, status=401)
@@ -1169,7 +1166,6 @@ def fetch_contests(request):
     except Exception as e:
         logger.error(f"Error fetching contests: {e}")
         return Response({"error": "Something went wrong. Please try again later."}, status=500)
-
 
 from datetime import datetime, timezone
 import jwt
@@ -1200,11 +1196,7 @@ def get_completed_count(contest_id):
 @permission_classes([AllowAny])
 def fetch_mcq_assessments(request):
     """
-    Fetch MCQ assessments based on staff role:
-    - Staff: Can only see their own assessments
-    - HOD: Can see assessments created for their department
-    - Principal: Can see assessments for their entire college
-    - SuperAdmin: Can see all assessments
+    Fetch MCQ assessments based on staff role
     """
     try:
         jwt_token = request.COOKIES.get("jwt")
@@ -1243,7 +1235,6 @@ def fetch_mcq_assessments(request):
             return Response({"error": "Unauthorized role access attempt."}, status=403)
 
         query = role_based_queries[role]
-
 
         projection = {
             "_id": 1, "contestId": 1, "assessmentOverview.name": 1, "assessmentOverview.registrationStart": 1,
@@ -1314,14 +1305,16 @@ def fetch_mcq_assessments(request):
         with ThreadPoolExecutor() as executor:
             assessments = list(filter(None, executor.map(process_assessment, assessments_cursor)))
 
-        return Response({
+        response = Response({
             "assessments": assessments,
             "total": len(assessments)
         })
+        
+        # Add cache headers to prevent caching
+        return add_no_cache_headers(response)
 
     except Exception as e:
         return Response({"error": str(e)}, status=500)
-
 
 
 
@@ -1358,7 +1351,8 @@ def get_staff_profile(request):
         if request.method == "GET":
             cached_data = cache.get(cache_key)
             if cached_data:
-                return Response(cached_data, status=200)
+                response = Response(cached_data, status=200)
+                return add_no_cache_headers(response)
 
         # Fetch the staff details from MongoDB using ObjectId
         staff = staff_collection.find_one({"_id": ObjectId(staff_id)})
@@ -1379,11 +1373,12 @@ def get_staff_profile(request):
             # Cache the result for 5 minutes
             cache.set(cache_key, staff_details, 300)
             
-            return Response(staff_details, status=200)
+            response = Response(staff_details, status=200)
+            return add_no_cache_headers(response)
 
         # Handle PUT request (Ensure user can only update their own profile)
         if request.method == "PUT":
-            data = request.data  # Extract new data from request body
+            data = request.data
             update_fields = {}
             
             # Map request field names to database field names
@@ -1413,14 +1408,14 @@ def get_staff_profile(request):
                 # Invalidate cache
                 cache.delete(cache_key)
                 
-                return Response({"message": "Profile updated successfully"}, status=200)
+                response = Response({"message": "Profile updated successfully"}, status=200)
+                return add_no_cache_headers(response)
 
             return Response({"error": "No valid fields provided for update"}, status=400)
 
     except Exception as e:
         logger.error(f"Unexpected error in get_staff_profile: {e}")
         return Response({"error": "An unexpected error occurred"}, status=500)
-
 
 @api_view(["DELETE"])
 @permission_classes([AllowAny])
