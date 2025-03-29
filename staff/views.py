@@ -11,6 +11,8 @@ import logging
 import json
 from django.core.cache import cache
 import time
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.authentication import TokenAuthentication
 from .utils import *
 import jwt
 from django.core.validators import validate_email
@@ -1328,17 +1330,28 @@ def fetch_mcq_assessments(request):
 
 
 
-@api_view(["GET", "PUT"])
-@permission_classes([AllowAny])
-@authentication_classes([])
+api_view(["GET", "PUT"])
+@authentication_classes([TokenAuthentication])  # Ensure authentication is applied
+@permission_classes([IsAuthenticated])  # Only allow authenticated users
 def get_staff_profile(request):
     """
     GET: Retrieve staff profile using the JWT token.
     PUT: Update staff profile details (only the logged-in user can modify their own profile).
     """
     try:
-        decoded_token = validate_jwt_token(request)
+        # Extract token from request
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or "Bearer" not in auth_header:
+            logger.warning("Unauthorized request - Missing JWT Token")
+            return Response({"error": "Unauthorized - Token missing"}, status=401)
+
+        token = auth_header.split(" ")[1]  # Extract token after 'Bearer'
+        decoded_token = validate_jwt_token(token)  # Validate token manually
+
         staff_id = decoded_token.get("staff_user")
+        if not staff_id:
+            logger.warning("Unauthorized request - Invalid JWT Token")
+            return Response({"error": "Unauthorized - Invalid token"}, status=401)
 
         # Fetch the staff details from MongoDB using ObjectId
         staff = staff_collection.find_one({"_id": ObjectId(staff_id)})
@@ -1355,43 +1368,36 @@ def get_staff_profile(request):
                 "profileImage": staff.get("profileImageBase64", ""),
                 "lastUpdated": datetime.now().isoformat()
             }
-            
-            response = Response(staff_details, status=200)
-            # Add cache control headers
-            return add_no_cache_headers(response)
+            logger.info(f"Profile retrieved successfully for staff ID {staff_id}")
+            return Response(staff_details, status=200)
 
         # Handle PUT request (Ensure user can only update their own profile)
         if request.method == "PUT":
             data = request.data
             update_fields = {}
-            
-            # Define fields that can be updated
+
             allowed_fields = {
                 "name": "full_name",
                 "email": "email",
                 "department": "department",
                 "collegename": "collegename"
             }
-            
-            # Copy only allowed fields
+
             for client_field, db_field in allowed_fields.items():
                 if client_field in data and data[client_field]:
                     update_fields[db_field] = data[client_field]
 
             if update_fields:
                 staff_collection.update_one({"_id": ObjectId(staff_id)}, {"$set": update_fields})
-                
-                response = Response({"message": "Profile updated successfully"}, status=200)
-                # Add cache control headers
-                return add_no_cache_headers(response)
+                logger.info(f"Profile updated for staff ID {staff_id}")
+                return Response({"message": "Profile updated successfully"}, status=200)
 
             return Response({"error": "No valid fields provided for update"}, status=400)
 
-    except AuthenticationFailed as auth_err:
-        return Response({"error": str(auth_err)}, status=401)
     except Exception as e:
         logger.error(f"Unexpected error in get_staff_profile: {e}")
-        return Response({"error": f"An unexpected error occurred: {str(e)}"}, status=500)
+        return Response({"error": "An unexpected error occurred"}, status=500)
+    
 
 @api_view(["DELETE"])
 @permission_classes([AllowAny])
