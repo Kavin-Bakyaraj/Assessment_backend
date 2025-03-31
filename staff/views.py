@@ -428,39 +428,38 @@ Errors:
         staff_id = str(staff_user["_id"])
         tokens = generate_tokens_for_staff(staff_id)
 
-        # Create response
         response = Response({
-            "message": "Login successful",
-            "tokens": tokens,
-            "staffId": staff_id,
-            "name": staff_user.get("full_name"),
-            "email": staff_user.get("email"),
-            "department": staff_user.get("department"),
-            "collegename": staff_user.get("collegename"),
-            "role": staff_user.get("role"),  # Added role to the response
-        }, status=200)
+                "message": "Login successful",
+                "tokens": tokens,
+                "staffId": staff_id,
+                "name": staff_user.get("full_name"),
+                "email": staff_user.get("email"),
+                "department": staff_user.get("department"),
+                "collegename": staff_user.get("collegename"),
+                "role": staff_user.get("role"),
+            }, status=200)
 
-        # Set secure cookie for JWT
+            # UPDATED: Set cookie with cross-domain compatibility
         response.set_cookie(
-            key='jwt',
-            value=tokens['jwt'],
-            httponly=True,
-            samesite='Lax',
-            path="/",      # Ensure the cookie is sent for all routes
-            secure=os.getenv("ENV") == "production",
-            max_age=1 * 24 * 60 * 60  # 1 day expiration
-        )
-        
+                key='jwt',
+                value=tokens['jwt'],
+                httponly=True,  # Cannot be accessed by JavaScript
+                samesite='None',  # Allow cross-site cookie
+                secure=True,     # Required for SameSite=None
+                path="/",        # Available for all paths
+                max_age=1 * 24 * 60 * 60  # 1 day expiration
+            )
+            
+            # Set non-httpOnly cookie for name
         response.set_cookie(
-            key='name',
-            value=staff_user.get("full_name"),
-            samesite='None',
-            path="/",  # Ensure the cookie is sent for all routes
-            max_age=1 * 24 * 60 * 60  # 1 day expiration
-        )
+                key='name',
+                value=staff_user.get("full_name"),
+                samesite='None', 
+                secure=True,
+                path="/",
+                max_age=1 * 24 * 60 * 60  # 1 day
+            )
 
-        logger.info(f"Login successful for staff: {email}")
-        
         return response
 
     except Exception as e:
