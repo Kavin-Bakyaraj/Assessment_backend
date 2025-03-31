@@ -11,8 +11,6 @@ import logging
 import json
 from django.core.cache import cache
 import time
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.authentication import TokenAuthentication
 from .utils import *
 import jwt
 from django.core.validators import validate_email
@@ -49,18 +47,23 @@ logger = logging.getLogger(__name__)
 
 JWT_SECRET = 'test'
 JWT_ALGORITHM = "HS256"
-# Add this function near the top of staff/views.py
-def add_no_cache_headers(response):
-    """Add headers to prevent browser caching"""
-    response['Cache-Control'] = 'no-cache, no-store, must-revalidate, max-age=0'
-    response['Pragma'] = 'no-cache'
-    response['Expires'] = '0'
-    # Add a timestamp to force cache busting
-    import time
-    response['X-Timestamp'] = str(time.time())
-    return response
 
-
+def get_jwt_token(request):
+    """
+    Extract JWT token from either Authorization header or cookie.
+    Returns the token string if found, None otherwise.
+    """
+    # First try to get token from Authorization header
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        return auth_header.split(' ')[1].strip()
+    
+    # Fall back to cookies
+    jwt_token = request.COOKIES.get("jwt", "").strip()
+    if jwt_token:
+        return jwt_token
+    
+    return None
 def generate_tokens_for_staff(staff_user):
     """
     Generate tokens for authentication. Modify this with JWT implementation if needed.
@@ -74,50 +77,6 @@ def generate_tokens_for_staff(staff_user):
     # Encode the token
     token = jwt.encode(access_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
     return {'jwt': token}
-
-def validate_jwt_token(request):
-    """
-    Validate JWT token from cookies OR Authorization header and return decoded payload or raise authentication error.
-    """
-    # First try to get token from Authorization header
-    auth_header = request.headers.get('Authorization')
-    if auth_header and auth_header.startswith('Bearer '):
-        jwt_token = auth_header.split(' ')[1]
-    else:
-        # Fall back to cookies if no Authorization header
-        jwt_token = request.COOKIES.get("jwt")
-    
-    if not jwt_token:
-        raise AuthenticationFailed("Authentication credentials were not provided.")
-
-    try:
-        # Create a stateless JWT verification with explicit algorithms and verify requirements
-        decoded_token = jwt.decode(
-            jwt_token,
-            JWT_SECRET,
-            algorithms=[JWT_ALGORITHM],
-            options={
-                'verify_signature': True,
-                'verify_exp': True,
-                'verify_iat': True,
-                'require': ['staff_user', 'exp', 'iat']
-            }
-        )
-
-        # Verify we have the required fields
-        if 'staff_user' not in decoded_token:
-            raise AuthenticationFailed("Invalid token format.")
-
-        # Additional verifications can be added here
-        return decoded_token
-
-    except jwt.ExpiredSignatureError:
-        raise AuthenticationFailed("Access token has expired. Please log in again.")
-    except jwt.InvalidTokenError as e:
-        raise AuthenticationFailed(f"Invalid token: {str(e)}. Please log in again.")
-    except Exception as e:
-        raise AuthenticationFailed(f"Authentication failed: {str(e)}")
-    
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def update_profile_picture(request):
@@ -353,119 +312,139 @@ Errors:
 @permission_classes([AllowAny])
 def staff_login(request):
     """
-    Handles staff login using email and password.
-    1. Validates email and password and checks if the user exists.
-    2. Verifies the password and generates authentication tokens.
-    3. Returns user details, authentication tokens, and role if login is successful.
-    Errors:
-    - 400: Missing email or password.
-    - 401: Incorrect email or password.
-    - 429: Account temporarily locked.
-    - 500: Server error.
-    """
+Handles staff login using email and password.
+
+1. Validates email and password and checks if the user exists.
+2. Verifies the password and generates authentication tokens.
+3. Returns user details, authentication tokens, and role if login is successful.
+
+Errors:
+- 400: Missing email or password.
+- 401: Incorrect email or password.
+- 500: Server error.
+"""
+
     try:
         data = request.data
         email = data.get("email")
         password = data.get("password")
+
         # Validate input
         if not email or not password:
             logger.warning(f"Login failed: Missing email or password")
-            return Response({"error": "Email and password are required"}, status=400)
+            return Response(
+                {"error": "Email and password are required"},
+                status=400
+            )
+
         # Fetch staff user from MongoDB
         staff_user = db['staff'].find_one({"email": email})
         if not staff_user:
             logger.warning(f"Login failed: User with email {email} not found")
             return Response({"error": "Invalid email or password"}, status=401)
+            
         # Check if account is locked
         lockout_info = staff_user.get("lockout_info", {})
         lockout_until = lockout_info.get("lockout_until")
+        
         if lockout_until:
             lockout_time = datetime.fromisoformat(lockout_until) if isinstance(lockout_until, str) else lockout_until
             now = datetime.now()
             if now < lockout_time:
+                # Account is locked
                 remaining_seconds = int((lockout_time - now).total_seconds())
                 return Response({
-                    "error": "Account temporarily locked due to too many failed login attempts",
+                    "error": "Account temporarily locked due to too many failed login attempts", 
                     "lockout_time": remaining_seconds
                 }, status=429)
+                
         # Check password hash
         stored_password = staff_user.get("password")
+        
+        # If password is incorrect - handle failed attempt
         if not check_password(password, stored_password):
             logger.warning(f"Login failed: Incorrect password for {email}")
+            
             # Increment attempt counter
             attempts = lockout_info.get("attempts", 0) + 1
             lockout_info = {"attempts": attempts, "lockout_until": None}
+            
+            # If 5 attempts reached, lock the account
             if attempts >= 5:
                 lockout_until = datetime.now() + timedelta(minutes=2)
                 lockout_info["lockout_until"] = lockout_until.isoformat()
+                
+                # Update the document with lockout information
                 db['staff'].update_one(
                     {"email": email},
                     {"$set": {"lockout_info": lockout_info}}
                 )
+                
                 return Response({
-                    "error": "Account temporarily locked due to too many failed login attempts",
+                    "error": "Account temporarily locked due to too many failed login attempts", 
                     "lockout_time": 300  # 5 minutes in seconds
                 }, status=429)
+            
+            # Update the failed attempts count
             db['staff'].update_one(
                 {"email": email},
                 {"$set": {"lockout_info": lockout_info}}
             )
+            
             return Response({"error": "Invalid email or password"}, status=401)
+
         # Password is correct, reset lockout information if any
         if lockout_info.get("attempts", 0) > 0:
             db['staff'].update_one(
                 {"email": email},
                 {"$set": {"lockout_info": {"attempts": 0, "lockout_until": None}}}
             )
+
         # Generate tokens
         staff_id = str(staff_user["_id"])
         tokens = generate_tokens_for_staff(staff_id)
-        # Get name from appropriate field based on your database structure
-        staff_name = staff_user.get("full_name", email.split('@')[0])
-        # Create response with profile picture if available
-        response_data = {
+
+        # Create response
+        response = Response({
             "message": "Login successful",
             "tokens": tokens,
-            "name": staff_name,
-            "email": email,
-            "role": staff_user.get("role"),
-            "dept": staff_user.get("department", staff_user.get("dept")),
-        }
-        response = Response(response_data)
-        # Set cookies
-        jwt_token = tokens.get("jwt", list(tokens.values())[0])
+            "staffId": staff_id,
+            "name": staff_user.get("full_name"),
+            "email": staff_user.get("email"),
+            "department": staff_user.get("department"),
+            "collegename": staff_user.get("collegename"),
+            "role": staff_user.get("role"),  # Added role to the response
+        }, status=200)
+
+        # Set secure cookie for JWT
         response.set_cookie(
             key='jwt',
-            value=jwt_token,
+            value=tokens['jwt'],
             httponly=True,
             samesite='Lax',
+            path="/",      # Ensure the cookie is sent for all routes
             secure=os.getenv("ENV") == "production",
-            max_age=1 * 24 * 60 * 60
+            max_age=1 * 24 * 60 * 60  # 1 day expiration
         )
+        
         response.set_cookie(
-            key='username',
-            value=staff_name,
-            samesite='Lax',
-            secure=os.getenv("ENV") == "production",
-            max_age=1 * 24 * 60 * 60
+            key='name',
+            value=staff_user.get("full_name"),
+            samesite='None',
+            path="/",  # Ensure the cookie is sent for all routes
+            max_age=1 * 24 * 60 * 60  # 1 day expiration
         )
+
         logger.info(f"Login successful for staff: {email}")
+        
         return response
+
     except Exception as e:
         logger.error(f"Error during staff login: {str(e)}")
         return Response(
             {"error": "Something went wrong. Please try again later."},
             status=500
         )
-
-
-
-
-
-
-
-
-
 
 
 from rest_framework.decorators import api_view, permission_classes
@@ -1121,23 +1100,49 @@ def fetch_student_stats(request):
 def fetch_contests(request):
     """
     Fetch contests created by the logged-in admin.
+
+    This endpoint:
+    - Authenticates the admin using a JWT token.
+    - Retrieves contests associated with the staff user.
+    - Determines the contest status (Upcoming, Live, Completed).
+    - Returns contest details including start date, end date, and assigned users.
+
+    Errors:
+    - 401: Token is expired or invalid.
+    - 500: Server error if data retrieval fails.
     """
     try:
-        # Use the central JWT validation function
-        decoded_token = validate_jwt_token(request)
+        jwt_token = request.COOKIES.get("jwt")
+        if not jwt_token:
+            raise AuthenticationFailed("Authentication credentials were not provided.")
+
+        # Decode JWT token
+        try:
+            decoded_token = jwt.decode(jwt_token, 'test', algorithms=["HS256"])
+        except jwt.ExpiredSignatureError:
+            raise AuthenticationFailed("Access token has expired. Please log in again.")
+        except jwt.InvalidTokenError:
+            raise AuthenticationFailed("Invalid token. Please log in again.")
+        
         staff_id = decoded_token.get("staff_user")
+        if not staff_id:
+            raise AuthenticationFailed("Invalid token payload.")
 
         # Connect to MongoDB collection
         coding_assessments = db['coding_assessments']
         current_date = datetime.utcnow().replace(tzinfo=timezone.utc).date()
 
-        # Filter contests by staffId directly in MongoDB query
+        # **Filter contests by staffId directly in MongoDB query**
         contests_cursor = coding_assessments.find({"staffId": staff_id})
 
         contests = []
         for contest in contests_cursor:
-            visible_to_users = contest.get("visible_to", [])
+            visible_to_users = contest.get("visible_to", [])  # Fetch the visible_to array
+
+            # Handle missing `assessmentOverview` safely
             assessment_overview = contest.get("assessmentOverview", {})
+
+            # Extract fields safely using `.get()`
             start_date = assessment_overview.get("registrationStart")
             end_date = assessment_overview.get("registrationEnd")
             assessment_name = assessment_overview.get("name", "Unnamed Contest")
@@ -1168,19 +1173,19 @@ def fetch_contests(request):
                 "assignedCount": len(visible_to_users),
             })
 
-        response = Response({
+        return Response({
             "contests": contests,
             "total": len(contests)
         })
-        
-        # Apply no-cache headers
-        return add_no_cache_headers(response)
 
-    except AuthenticationFailed as auth_err:
-        return Response({"error": str(auth_err)}, status=401)
+    except jwt.ExpiredSignatureError:
+        return Response({"error": "Token has expired"}, status=401)
+    except jwt.InvalidTokenError:
+        return Response({"error": "Invalid token"}, status=401)
     except Exception as e:
         logger.error(f"Error fetching contests: {e}")
         return Response({"error": "Something went wrong. Please try again later."}, status=500)
+
 
 from datetime import datetime, timezone
 import jwt
@@ -1196,6 +1201,9 @@ from functools import lru_cache
 # Assuming db is already initialized
 # db = MongoClient().your_database
 
+# Add this helper function near the top with your other utility functions
+
+
 # Cache for frequently accessed data
 @lru_cache(maxsize=128)
 def get_completed_count(contest_id):
@@ -1207,21 +1215,37 @@ def get_completed_count(contest_id):
     return completed_count
 
 
+# 3. Update fetch_mcq_assessments
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def fetch_mcq_assessments(request):
-    """
-    Fetch MCQ assessments based on staff role
-    """
     try:
-        decoded_token = validate_jwt_token(request)
-        staff_id = decoded_token.get("staff_user")
+        jwt_token = get_jwt_token(request)
+        if not jwt_token:
+            raise AuthenticationFailed("Authentication credentials were not provided.")
 
+        # Rest of the function remains the same...
+
+        try:
+            decoded_token = jwt.decode(jwt_token, 'test', algorithms=["HS256"])
+        except jwt.ExpiredSignatureError:
+            raise AuthenticationFailed("Access token has expired. Please log in again.")
+        except jwt.InvalidTokenError:
+            raise AuthenticationFailed("Invalid token. Please log in again.")
+
+        staff_id = decoded_token.get("staff_user")
+        if not isinstance(staff_id, str) or not staff_id.strip():
+            raise AuthenticationFailed("Invalid staff ID in token payload.")
+
+        staff_collection = db['staff']
         staff_user = staff_collection.find_one({"_id": ObjectId(staff_id)}, {"role": 1, "department": 1, "collegename": 1})
         if not staff_user:
             raise AuthenticationFailed("Staff user not found.")
 
         role, department, collegename = staff_user.get("role"), staff_user.get("department"), staff_user.get("collegename")
+        mcq_collection = db['MCQ_Assessment_Data']
+        
+        # Define query based on validated role
         role_based_queries = {
             "Staff": {"staffId": staff_id},
             "HOD": {"department": department},
@@ -1229,10 +1253,13 @@ def fetch_mcq_assessments(request):
             "Admin": {},  # SuperAdmin sees all
         }
 
+        # Ensure the role is one of the expected ones to prevent privilege escalation
         if role not in role_based_queries:
             return Response({"error": "Unauthorized role access attempt."}, status=403)
 
         query = role_based_queries[role]
+
+
         projection = {
             "_id": 1, "contestId": 1, "assessmentOverview.name": 1, "assessmentOverview.registrationStart": 1,
             "assessmentOverview.registrationEnd": 1, "visible_to": 1, "student_details": 1,
@@ -1302,44 +1329,58 @@ def fetch_mcq_assessments(request):
         with ThreadPoolExecutor() as executor:
             assessments = list(filter(None, executor.map(process_assessment, assessments_cursor)))
 
-        response = Response({
+        return Response({
             "assessments": assessments,
             "total": len(assessments)
         })
-        
-        # Add cache headers to prevent caching
-        return add_no_cache_headers(response)
 
-    except AuthenticationFailed as auth_err:
-        return Response({"error": str(auth_err)}, status=401)
     except Exception as e:
-        logger.error(f"Error in fetch_mcq_assessments: {e}")
-        return Response({"error": f"Something went wrong: {str(e)}"}, status=500)
+        return Response({"error": str(e)}, status=500)
 
 
 
-api_view(["GET", "PUT"])
-@authentication_classes([TokenAuthentication])  # Ensure authentication is applied
-@permission_classes([IsAuthenticated])  # Only allow authenticated users
+
+@api_view(["GET", "PUT"])
+@permission_classes([AllowAny])
+@authentication_classes([])
 def get_staff_profile(request):
     """
-    GET: Retrieve staff profile using the JWT token.
+    GET: Retrieve staff profile using the JWT token from either Authorization header or cookies.
     PUT: Update staff profile details (only the logged-in user can modify their own profile).
     """
     try:
-        # Extract token from request
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or "Bearer" not in auth_header:
-            logger.warning("Unauthorized request - Missing JWT Token")
-            return Response({"error": "Unauthorized - Token missing"}, status=401)
+        # First try to get token from Authorization header
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Bearer '):
+            jwt_token = auth_header.split(' ')[1].strip()
+        else:
+            # Fall back to cookies if no Authorization header
+            jwt_token = request.COOKIES.get("jwt", "").strip()
+        
+        # Check if we have a token
+        if not jwt_token:
+            return Response({"error": "Authentication credentials were not provided."}, status=401)
 
-        token = auth_header.split(" ")[1]  # Extract token after 'Bearer'
-        decoded_token = validate_jwt_token(token)  # Validate token manually
+        # Decode JWT token safely
+        try:
+            decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        except jwt.ExpiredSignatureError:
+            return Response({"error": "Access token has expired. Please log in again."}, status=401)
+        except jwt.InvalidTokenError:
+            return Response({"error": "Invalid token. Please log in again."}, status=401)
 
         staff_id = decoded_token.get("staff_user")
         if not staff_id:
-            logger.warning("Unauthorized request - Invalid JWT Token")
-            return Response({"error": "Unauthorized - Invalid token"}, status=401)
+            return Response({"error": "Invalid token payload."}, status=401)
+
+        # Generate a cache key for this staff user
+        cache_key = f"staff_profile_{staff_id}"
+
+        # Check cache for GET requests
+        if request.method == "GET":
+            cached_data = cache.get(cache_key)
+            if cached_data:
+                return Response(cached_data, status=200)
 
         # Fetch the staff details from MongoDB using ObjectId
         staff = staff_collection.find_one({"_id": ObjectId(staff_id)})
@@ -1349,35 +1390,51 @@ def get_staff_profile(request):
         # Handle GET request
         if request.method == "GET":
             staff_details = {
-                "name": staff.get("full_name", ""),
-                "email": staff.get("email", ""),
-                "department": staff.get("department", ""),
-                "collegename": staff.get("collegename", ""),
-                "profileImage": staff.get("profileImageBase64", ""),
+                "name": staff.get("full_name"),
+                "email": staff.get("email"),
+                "department": staff.get("department"),
+                "collegename": staff.get("collegename"),
+                "profileImage": staff.get("profileImageBase64"),
                 "lastUpdated": datetime.now().isoformat()
             }
-            logger.info(f"Profile retrieved successfully for staff ID {staff_id}")
+            
+            # Cache the result for 5 minutes
+            cache.set(cache_key, staff_details, 300)
+            
             return Response(staff_details, status=200)
 
         # Handle PUT request (Ensure user can only update their own profile)
         if request.method == "PUT":
-            data = request.data
+            data = request.data  # Extract new data from request body
             update_fields = {}
-
-            allowed_fields = {
+            
+            # Map request field names to database field names
+            field_mapping = {
                 "name": "full_name",
                 "email": "email",
                 "department": "department",
                 "collegename": "collegename"
             }
-
-            for client_field, db_field in allowed_fields.items():
-                if client_field in data and data[client_field]:
-                    update_fields[db_field] = data[client_field]
+            
+            # Build update dictionary
+            for field, db_field in field_mapping.items():
+                if field in data and data[field]:
+                    update_fields[db_field] = data[field]
 
             if update_fields:
-                staff_collection.update_one({"_id": ObjectId(staff_id)}, {"$set": update_fields})
-                logger.info(f"Profile updated for staff ID {staff_id}")
+                # Ensure the JWT staff ID matches the staff ID in the database
+                if ObjectId(staff_id) != staff["_id"]:
+                    return Response({"error": "Unauthorized: You can only update your own profile."}, status=403)
+
+                # Add timestamp for the update
+                update_fields["updated_at"] = datetime.now()
+                
+                # Update in database
+                staff_collection.update_one({"_id": staff["_id"]}, {"$set": update_fields})
+                
+                # Invalidate cache
+                cache.delete(cache_key)
+                
                 return Response({"message": "Profile updated successfully"}, status=200)
 
             return Response({"error": "No valid fields provided for update"}, status=400)
@@ -1385,7 +1442,7 @@ def get_staff_profile(request):
     except Exception as e:
         logger.error(f"Unexpected error in get_staff_profile: {e}")
         return Response({"error": "An unexpected error occurred"}, status=500)
-    
+
 
 @api_view(["DELETE"])
 @permission_classes([AllowAny])
