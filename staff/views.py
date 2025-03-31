@@ -1121,31 +1121,20 @@ def fetch_student_stats(request):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def fetch_contests(request):
-    """
-    Fetch contests created by the logged-in admin.
-
-    This endpoint:
-    - Authenticates the admin using a JWT token.
-    - Retrieves contests associated with the staff user.
-    - Determines the contest status (Upcoming, Live, Completed).
-    - Returns contest details including start date, end date, and assigned users.
-
-    Errors:
-    - 401: Token is expired or invalid.
-    - 500: Server error if data retrieval fails.
-    """
     try:
-        jwt_token = request.COOKIES.get("jwt")
+        # Use consistent token extraction
+        jwt_token = get_jwt_token(request)
         if not jwt_token:
-            raise AuthenticationFailed("Authentication credentials were not provided.")
+            return Response({"error": "Authentication credentials were not provided."}, status=401)
 
         # Decode JWT token
         try:
-            decoded_token = jwt.decode(jwt_token, 'test', algorithms=["HS256"])
+            decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         except jwt.ExpiredSignatureError:
-            raise AuthenticationFailed("Access token has expired. Please log in again.")
+            return Response({"error": "Access token has expired. Please log in again."}, status=401)
         except jwt.InvalidTokenError:
-            raise AuthenticationFailed("Invalid token. Please log in again.")
+            return Response({"error": "Invalid token. Please log in again."}, status=401)
+        
         
         staff_id = decoded_token.get("staff_user")
         if not staff_id:
