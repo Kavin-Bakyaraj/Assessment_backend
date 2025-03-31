@@ -74,6 +74,20 @@ def get_jwt_token(request):
     logger.warning("No JWT token found in request")
     return None
 
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def debug_auth(request):
+    """Debug endpoint to check authentication details."""
+    auth_header = request.headers.get('Authorization', '')
+    cookies = request.COOKIES
+    
+    return Response({
+        "auth_header": auth_header,
+        "cookies": cookies,
+        "token_from_header": auth_header.split(' ')[1].strip() if auth_header and auth_header.startswith('Bearer ') else None,
+        "token_from_cookie": cookies.get("jwt"),
+    })
+
 def generate_tokens_for_staff(staff_user):
     """
     Generate tokens for authentication. Modify this with JWT implementation if needed.
