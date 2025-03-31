@@ -77,9 +77,16 @@ def generate_tokens_for_staff(staff_user):
 
 def validate_jwt_token(request):
     """
-    Validate JWT token from cookies and return decoded payload or raise authentication error.
+    Validate JWT token from cookies OR Authorization header and return decoded payload or raise authentication error.
     """
-    jwt_token = request.COOKIES.get("jwt")
+    # First try to get token from Authorization header
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        jwt_token = auth_header.split(' ')[1]
+    else:
+        # Fall back to cookies if no Authorization header
+        jwt_token = request.COOKIES.get("jwt")
+    
     if not jwt_token:
         raise AuthenticationFailed("Authentication credentials were not provided.")
 
@@ -93,14 +100,15 @@ def validate_jwt_token(request):
                 'verify_signature': True,
                 'verify_exp': True,
                 'verify_iat': True,
-                'require': ['staff_user', 'exp', 'iat']  # Required fields for staff token
+                'require': ['staff_user', 'exp', 'iat']
             }
         )
 
         # Verify we have the required fields
         if 'staff_user' not in decoded_token:
-            raise AuthenticationFailed("Invalid token structure")
+            raise AuthenticationFailed("Invalid token format.")
 
+        # Additional verifications can be added here
         return decoded_token
 
     except jwt.ExpiredSignatureError:
@@ -108,7 +116,7 @@ def validate_jwt_token(request):
     except jwt.InvalidTokenError as e:
         raise AuthenticationFailed(f"Invalid token: {str(e)}. Please log in again.")
     except Exception as e:
-        raise AuthenticationFailed(f"Authentication error: {str(e)}.")
+        raise AuthenticationFailed(f"Authentication failed: {str(e)}")
     
 @api_view(["POST"])
 @permission_classes([AllowAny])
