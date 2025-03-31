@@ -1443,7 +1443,6 @@ def get_staff_profile(request):
         logger.error(f"Unexpected error in get_staff_profile: {e}")
         return Response({"error": "An unexpected error occurred"}, status=500)
 
-
 @api_view(["DELETE"])
 @permission_classes([AllowAny])
 @authentication_classes([])
