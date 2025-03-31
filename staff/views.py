@@ -50,20 +50,30 @@ JWT_ALGORITHM = "HS256"
 
 def get_jwt_token(request):
     """
-    Extract JWT token from either Authorization header or cookie.
+    Extract JWT token from either Authorization header or cookie with enhanced logging.
     Returns the token string if found, None otherwise.
     """
+    # Log request details for debugging
+    logger.info(f"Extracting JWT token from request")
+    logger.debug(f"Headers: {dict(request.headers)}")
+    logger.debug(f"Cookies: {request.COOKIES}")
+    
     # First try to get token from Authorization header
-    auth_header = request.headers.get('Authorization')
+    auth_header = request.headers.get('Authorization', '')
     if auth_header and auth_header.startswith('Bearer '):
-        return auth_header.split(' ')[1].strip()
+        token = auth_header.split(' ')[1].strip()
+        logger.info(f"Found token in Authorization header: {token[:10]}...")
+        return token
     
     # Fall back to cookies
     jwt_token = request.COOKIES.get("jwt", "").strip()
     if jwt_token:
+        logger.info(f"Found token in cookies: {jwt_token[:10]}...")
         return jwt_token
     
+    logger.warning("No JWT token found in request")
     return None
+
 def generate_tokens_for_staff(staff_user):
     """
     Generate tokens for authentication. Modify this with JWT implementation if needed.
@@ -1349,29 +1359,37 @@ def get_staff_profile(request):
     PUT: Update staff profile details (only the logged-in user can modify their own profile).
     """
     try:
-        # First try to get token from Authorization header
-        auth_header = request.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            jwt_token = auth_header.split(' ')[1].strip()
-        else:
-            # Fall back to cookies if no Authorization header
-            jwt_token = request.COOKIES.get("jwt", "").strip()
+        logger.info("Processing staff profile request")
+        
+        # Extract JWT token using the improved function
+        jwt_token = get_jwt_token(request)
         
         # Check if we have a token
         if not jwt_token:
+            logger.warning("No JWT token found in request")
             return Response({"error": "Authentication credentials were not provided."}, status=401)
 
-        # Decode JWT token safely
+        # Decode JWT token safely with robust error handling
         try:
             decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            logger.info(f"Successfully decoded JWT token")
         except jwt.ExpiredSignatureError:
+            logger.warning("JWT token expired")
             return Response({"error": "Access token has expired. Please log in again."}, status=401)
-        except jwt.InvalidTokenError:
+        except jwt.InvalidTokenError as e:
+            logger.warning(f"Invalid JWT token: {str(e)}")
             return Response({"error": "Invalid token. Please log in again."}, status=401)
+        except Exception as e:
+            logger.error(f"Unexpected error decoding JWT: {str(e)}")
+            return Response({"error": "Authentication error occurred."}, status=401)
 
+        # Extract staff_id and validate it
         staff_id = decoded_token.get("staff_user")
         if not staff_id:
+            logger.warning("Missing staff_user in token payload")
             return Response({"error": "Invalid token payload."}, status=401)
+
+        logger.info(f"Processing request for staff_id: {staff_id}")
 
         # Generate a cache key for this staff user
         cache_key = f"staff_profile_{staff_id}"
@@ -1380,68 +1398,83 @@ def get_staff_profile(request):
         if request.method == "GET":
             cached_data = cache.get(cache_key)
             if cached_data:
+                logger.info(f"Returning cached profile data for staff_id: {staff_id}")
                 return Response(cached_data, status=200)
 
-        # Fetch the staff details from MongoDB using ObjectId
-        staff = staff_collection.find_one({"_id": ObjectId(staff_id)})
-        if not staff:
-            return Response({"error": "Staff not found"}, status=404)
+        try:
+            # Fetch the staff details from MongoDB using ObjectId
+            staff = staff_collection.find_one({"_id": ObjectId(staff_id)})
+            if not staff:
+                logger.warning(f"Staff not found with ID: {staff_id}")
+                return Response({"error": "Staff not found"}, status=404)
+        except Exception as db_error:
+            logger.error(f"Database error when fetching staff: {str(db_error)}")
+            return Response({"error": "Error retrieving staff profile"}, status=500)
 
         # Handle GET request
         if request.method == "GET":
-            staff_details = {
-                "name": staff.get("full_name"),
-                "email": staff.get("email"),
-                "department": staff.get("department"),
-                "collegename": staff.get("collegename"),
-                "profileImage": staff.get("profileImageBase64"),
-                "lastUpdated": datetime.now().isoformat()
-            }
-            
-            # Cache the result for 5 minutes
-            cache.set(cache_key, staff_details, 300)
-            
-            return Response(staff_details, status=200)
+            try:
+                staff_details = {
+                    "name": staff.get("full_name"),
+                    "email": staff.get("email"),
+                    "department": staff.get("department"),
+                    "collegename": staff.get("collegename"),
+                    "profileImage": staff.get("profileImageBase64"),
+                    "lastUpdated": datetime.now().isoformat()
+                }
+                
+                # Cache the result for 5 minutes
+                cache.set(cache_key, staff_details, 300)
+                
+                logger.info(f"Successfully retrieved profile for staff_id: {staff_id}")
+                return Response(staff_details, status=200)
+            except Exception as format_error:
+                logger.error(f"Error formatting staff data: {str(format_error)}")
+                return Response({"error": "Error processing staff profile data"}, status=500)
 
         # Handle PUT request (Ensure user can only update their own profile)
         if request.method == "PUT":
-            data = request.data  # Extract new data from request body
-            update_fields = {}
+            try:
+                data = request.data  # Extract new data from request body
+                update_fields = {}
+                
+                # Map request field names to database field names
+                field_mapping = {
+                    "name": "full_name",
+                    "email": "email",
+                    "department": "department",
+                    "collegename": "collegename"
+                }
+                
+                # Build update dictionary
+                for field, db_field in field_mapping.items():
+                    if field in data and data[field]:
+                        update_fields[db_field] = data[field]
+
+                if update_fields:
+                    # Add timestamp for the update
+                    update_fields["updated_at"] = datetime.now()
+                    
+                    # Update in database
+                    staff_collection.update_one({"_id": ObjectId(staff_id)}, {"$set": update_fields})
+                    
+                    # Invalidate cache
+                    cache.delete(cache_key)
+                    
+                    logger.info(f"Successfully updated profile for staff_id: {staff_id}")
+                    return Response({"message": "Profile updated successfully"}, status=200)
+
+                logger.warning(f"Update request with no valid fields for staff_id: {staff_id}")
+                return Response({"error": "No valid fields provided for update"}, status=400)
             
-            # Map request field names to database field names
-            field_mapping = {
-                "name": "full_name",
-                "email": "email",
-                "department": "department",
-                "collegename": "collegename"
-            }
-            
-            # Build update dictionary
-            for field, db_field in field_mapping.items():
-                if field in data and data[field]:
-                    update_fields[db_field] = data[field]
-
-            if update_fields:
-                # Ensure the JWT staff ID matches the staff ID in the database
-                if ObjectId(staff_id) != staff["_id"]:
-                    return Response({"error": "Unauthorized: You can only update your own profile."}, status=403)
-
-                # Add timestamp for the update
-                update_fields["updated_at"] = datetime.now()
-                
-                # Update in database
-                staff_collection.update_one({"_id": staff["_id"]}, {"$set": update_fields})
-                
-                # Invalidate cache
-                cache.delete(cache_key)
-                
-                return Response({"message": "Profile updated successfully"}, status=200)
-
-            return Response({"error": "No valid fields provided for update"}, status=400)
+            except Exception as update_error:
+                logger.error(f"Error updating staff profile: {str(update_error)}")
+                return Response({"error": "Failed to update profile"}, status=500)
 
     except Exception as e:
-        logger.error(f"Unexpected error in get_staff_profile: {e}")
+        logger.error(f"Unexpected error in get_staff_profile: {str(e)}")
         return Response({"error": "An unexpected error occurred"}, status=500)
+    
 
 @api_view(["DELETE"])
 @permission_classes([AllowAny])
