@@ -310,7 +310,7 @@ Errors:
                 httponly=True,
                 samesite='Lax',
                 secure=True,
-                max_age=1 * 24 * 60 * 60
+                max_age=10 * 60 * 60 
             )
             
             # Set name in a separate cookie for frontend access
