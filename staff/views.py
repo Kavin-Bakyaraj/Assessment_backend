@@ -308,7 +308,7 @@ Errors:
                 key='jwt',
                 value=jwt_token,
                 httponly=True,
-                samesite='None',
+                samesite='Lax',
                 secure=True,
                 max_age=1 * 24 * 60 * 60
             )
@@ -317,7 +317,7 @@ Errors:
             response.set_cookie(
                 key='username',
                 value=staff_name,
-                samesite='None',
+                samesite='Lax',
                 secure=True,
                 max_age=1 * 24 * 60 * 60
             )
@@ -444,7 +444,7 @@ Errors:
                 key='jwt',
                 value=tokens['jwt'],
                 httponly=True,  # Cannot be accessed by JavaScript
-                samesite='None',  # Allow cross-site cookie
+                samesite='Lax',  # Allow cross-site cookie
                 secure=True,     # Required for SameSite=None
                 path="/",        # Available for all paths
                 max_age=1 * 24 * 60 * 60  # 1 day expiration
@@ -454,7 +454,7 @@ Errors:
         response.set_cookie(
                 key='name',
                 value=staff_user.get("full_name"),
-                samesite='None', 
+                samesite='Lax', 
                 secure=True,
                 path="/",
                 max_age=1 * 24 * 60 * 60  # 1 day
