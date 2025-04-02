@@ -280,7 +280,7 @@ def student_login(request):
             key='jwt',
             value=tokens['jwt'],
             httponly=True,
-            samesite='None',
+            samesite='Lax',
             secure=True,
             max_age=1 * 24 * 60 * 60  # 24 hours
         )
@@ -671,7 +671,7 @@ def google_login(request):
                 key='jwt',
                 value=tokens['jwt'],
                 httponly=True,
-                samesite='None',
+                samesite='Lax',
                 secure=True,
                 max_age=1 * 24 * 60 * 60
             )
