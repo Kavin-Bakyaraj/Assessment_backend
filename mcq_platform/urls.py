@@ -21,7 +21,8 @@ from .mcqlibrary import save_selected_questions
 
 urlpatterns = [
     path("save-data/", save_data,name = "saveData"),
-    path("save-section-data/", save_section_data,name = "savesectionData"),
+    path("save-assessment-questions/", save_assessment_questions, name='save_assessment_questions'),
+    # path("save-section-data/", save_section_data,name = "savesectionData"),
     path("start-contest/", start_contest, name="start_contest"),
     path("questions/", get_questions, name="get_questions"),
     path("questions/<str:question_id>/", update_mcqquestion, name="update_mcqquestion"), #manual update
