@@ -330,7 +330,7 @@ def save_data(request):
 @csrf_exempt
 def save_section_data(request):
     """
-    Save section data for a contest.
+    Save section data for a contest with robust token handling.
 
     Args:
         request: The HTTP request object containing the section data in the request body.
@@ -338,43 +338,179 @@ def save_section_data(request):
     Returns:
         JsonResponse: A JSON response indicating success or an error message if the data is invalid or missing.
     """
-    if request.method == "POST":
+    if request.method != "POST":
+        return JsonResponse({"error": "Invalid request method"}, status=400)
+    
+    try:
+        # Multi-source token retrieval
+        jwt_token = None
+        
+        # Try cookies
+        for cookie_name in ["jwt", "access_token", "token", "stafftoken"]:
+            if cookie_name in request.COOKIES:
+                jwt_token = request.COOKIES.get(cookie_name)
+                break
+                
+        # Try header
+        if not jwt_token:
+            auth_header = request.headers.get('Authorization', '')
+            if auth_header.startswith('Bearer '):
+                jwt_token = auth_header.split(' ')[1]
+        
+        # Try body
+        if not jwt_token:
+            try:
+                data = json.loads(request.body)
+                for field in ['token', 'stafftoken', 'access_token', 'jwt']:
+                    if field in data:
+                        jwt_token = data.get(field)
+                        if jwt_token:
+                            break
+            except:
+                pass
+                
+        if not jwt_token:
+            return JsonResponse({"error": "Authentication credentials were not provided."}, status=401)
+        
+        # Clean token
+        jwt_token = jwt_token.strip().replace('"', '').replace("'", "") if isinstance(jwt_token, str) else jwt_token
+        
+        # Try multiple algorithms and secrets
+        decoded_token = None
+        last_error = None
+        
+        # Array of possible algorithms to try
+        algorithms = ["HS256", "RS256"]
+        if JWT_ALGORITHM:
+            algorithms.insert(0, JWT_ALGORITHM)  # Try configured algorithm first
+            
+        # Secrets to try
+        secrets = [JWT_SECRET]
+        if SECRET_KEY and SECRET_KEY != JWT_SECRET:
+            secrets.append(SECRET_KEY)
+            
+        # Try each combination of secret and algorithm
+        for secret in secrets:
+            if not secret:
+                continue
+                
+            for alg in algorithms:
+                try:
+                    decoded_token = jwt.decode(jwt_token, secret, algorithms=[alg])
+                    break  # Success - exit loop
+                except Exception as e:
+                    last_error = e
+                    continue
+                    
+            if decoded_token:
+                break  # Found a working combination
+                
+        if not decoded_token:
+            return JsonResponse({"error": f"Token validation failed: {str(last_error)}"}, status=401)
+            
+        # Extract staff_id - check multiple possible field names
+        staff_id = None
+        for field in ['staff_user', 'staff_id', 'user_id', 'id', 'sub']:
+            if field in decoded_token:
+                staff_id = decoded_token.get(field)
+                if staff_id:
+                    break
+                    
+        if not staff_id:
+            return JsonResponse({"error": "Invalid token payload: missing staff ID"}, status=401)
+            
+        # Find staff details
         try:
-            jwt_token = request.COOKIES.get("jwt")
-            if not jwt_token:
-                raise AuthenticationFailed("Authentication credentials were not provided.")
-
-            try:
-                decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-            except jwt.ExpiredSignatureError:
-                raise AuthenticationFailed("Access token has expired. Please log in again.")
-            except jwt.InvalidTokenError:
-                raise AuthenticationFailed("Invalid token. Please log in again.")
-
-            staff_id = decoded_token.get("staff_user")
-            if not staff_id:
-                raise AuthenticationFailed("Invalid token payload.")
-
-            data = json.loads(request.body)
-            data["staffId"] = staff_id
-            contest_id = data.get("contestId")
-            if not contest_id:
-                return JsonResponse({"error": "contestId is required"}, status=400)
-
-            if "assessmentOverview" not in data or "registrationStart" not in data["assessmentOverview"] or "registrationEnd" not in data["assessmentOverview"]:
-                return JsonResponse({"error": "'registrationStart' or 'registrationEnd' is missing in 'assessmentOverview'"}, status=400)
-
-            try:
-                data["assessmentOverview"]["registrationStart"] = datetime.datetime.fromisoformat(data["assessmentOverview"]["registrationStart"])
-                data["assessmentOverview"]["registrationEnd"] = datetime.datetime.fromisoformat(data["assessmentOverview"]["registrationEnd"])
-            except ValueError as e:
-                return JsonResponse({"error": f"Invalid date format: {str(e)}"}, status=400)
-
-            collection.insert_one(data)
-            return JsonResponse({"message": "Data saved successfully", "contestId": contest_id}, status=200)
+            # Convert to ObjectId if it's a string and valid format
+            if isinstance(staff_id, str) and len(staff_id) == 24:
+                try:
+                    staff_id_obj = ObjectId(staff_id)
+                except:
+                    staff_id_obj = staff_id
+            else:
+                staff_id_obj = staff_id
+                
+            staff_details = staff_collection.find_one({"_id": staff_id_obj})
+            
+            # Try alternate fields if first attempt fails
+            if not staff_details:
+                staff_details = staff_collection.find_one({"staffId": staff_id})
+                
+            if not staff_details:
+                return JsonResponse({"error": "Staff not found"}, status=404)
+                
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
-    return JsonResponse({"error": "Invalid request method"}, status=400)
+            return JsonResponse({"error": f"Database error: {str(e)}"}, status=500)
+        
+        # Parse request data
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({"error": "Invalid JSON data"}, status=400)
+        
+        # Add staff info to data
+        data["staffId"] = staff_id
+        if staff_details:
+            data.update({
+                "department": staff_details.get("department"),
+                "college": staff_details.get("collegename"),
+                "name": staff_details.get("full_name")
+            })
+
+        # Validate contest ID
+        contest_id = data.get("contestId")
+        if not contest_id:
+            return JsonResponse({"error": "contestId is required"}, status=400)
+            
+        # Validate assessment overview
+        if "assessmentOverview" not in data or "registrationStart" not in data["assessmentOverview"] or "registrationEnd" not in data["assessmentOverview"]:
+            return JsonResponse({"error": "'registrationStart' or 'registrationEnd' is missing in 'assessmentOverview'"}, status=400)
+            
+        # Handle date conversion
+        try:
+            # Try multiple date formats for each date field
+            for field in ["registrationStart", "registrationEnd"]:
+                date_str = data["assessmentOverview"][field]
+                
+                if isinstance(date_str, str):
+                    try:
+                        # Try direct ISO format
+                        data["assessmentOverview"][field] = datetime.datetime.fromisoformat(date_str)
+                    except ValueError:
+                        # Clean the date string and try again
+                        clean_date = date_str.replace('Z', '')
+                        if '+' in clean_date:
+                            clean_date = clean_date.split('+')[0]
+                        if '.' in clean_date:
+                            clean_date = clean_date.split('.')[0]
+                            
+                        # For YYYY-MM-DDThh:mm format (without seconds)
+                        if len(clean_date) == 16:
+                            clean_date += ":00"
+                            
+                        data["assessmentOverview"][field] = datetime.datetime.fromisoformat(clean_date)
+        except ValueError as e:
+            return JsonResponse({"error": f"Invalid date format: {str(e)}"}, status=400)
+            
+        # Insert data
+        try:
+            collection.insert_one(data)
+        except Exception as e:
+            return JsonResponse({"error": f"Database error: {str(e)}"}, status=500)
+            
+        # Return success response
+        return JsonResponse({
+            "message": "Data saved successfully", 
+            "contestId": contest_id,
+            "staffDetails": {
+                "name": staff_details.get("full_name", ""),
+                "department": staff_details.get("department", []),
+                "college": staff_details.get("collegename", "")
+            }
+        }, status=200)
+        
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
 def save_question(request):
