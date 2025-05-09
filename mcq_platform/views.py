@@ -170,8 +170,8 @@ def save_data(request):
                 decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
             except jwt.ExpiredSignatureError:
                 raise AuthenticationFailed("Access token has expired. Please log in again.")
-            except jwt.InvalidTokenError:
-                raise AuthenticationFailed("Invalid token. Please log in again.")
+            # except jwt.InvalidTokenError:
+            #     raise AuthenticationFailed("Invalid token. Please log in again.")
 
             staff_id = decoded_token.get("staff_user")
             if not staff_id:
