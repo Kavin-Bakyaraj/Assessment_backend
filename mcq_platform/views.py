@@ -152,7 +152,7 @@ from bson import ObjectId
 @csrf_exempt
 def save_data(request):
     """
-    Save assessment data for a contest.
+    Save assessment data for a contest (no authentication).
 
     Args:
         request: The HTTP request object containing the assessment data in the request body.
@@ -162,28 +162,17 @@ def save_data(request):
     """
     if request.method == "POST":
         try:
-            jwt_token = request.COOKIES.get("jwt")
-            if not jwt_token:
-                raise AuthenticationFailed("Authentication credentials were not provided.")
+            data = json.loads(request.body)
 
-            try:
-                decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-            except jwt.ExpiredSignatureError:
-                raise AuthenticationFailed("Access token has expired. Please log in again.")
-            except jwt.InvalidTokenError:
-                raise AuthenticationFailed("Invalid token. Please log in again.")
-
-            staff_id = decoded_token.get("staff_user")
+            staff_id = data.get("staffId")
             if not staff_id:
-                raise AuthenticationFailed("Invalid token payload.")
+                return JsonResponse({"error": "staffId is required"}, status=400)
 
             staff_details = staff_collection.find_one({"_id": ObjectId(staff_id)})
             if not staff_details:
                 return JsonResponse({"error": "Staff not found"}, status=404)
 
-            data = json.loads(request.body)
             data.update({
-                "staffId": staff_id,
                 "department": staff_details.get("department"),
                 "college": staff_details.get("collegename"),
                 "name": staff_details.get("full_name")
@@ -214,13 +203,14 @@ def save_data(request):
             }, status=200)
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
+
     return JsonResponse({"error": "Invalid request method"}, status=400)
 
 
 @csrf_exempt
 def save_section_data(request):
     """
-    Save section data for a contest.
+    Save section data for a contest (no authentication).
 
     Args:
         request: The HTTP request object containing the section data in the request body.
@@ -230,23 +220,12 @@ def save_section_data(request):
     """
     if request.method == "POST":
         try:
-            jwt_token = request.COOKIES.get("jwt")
-            if not jwt_token:
-                raise AuthenticationFailed("Authentication credentials were not provided.")
-
-            try:
-                decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-            except jwt.ExpiredSignatureError:
-                raise AuthenticationFailed("Access token has expired. Please log in again.")
-            except jwt.InvalidTokenError:
-                raise AuthenticationFailed("Invalid token. Please log in again.")
-
-            staff_id = decoded_token.get("staff_user")
-            if not staff_id:
-                raise AuthenticationFailed("Invalid token payload.")
-
             data = json.loads(request.body)
-            data["staffId"] = staff_id
+
+            staff_id = data.get("staffId")
+            if not staff_id:
+                return JsonResponse({"error": "staffId is required"}, status=400)
+
             contest_id = data.get("contestId")
             if not contest_id:
                 return JsonResponse({"error": "contestId is required"}, status=400)
@@ -261,9 +240,13 @@ def save_section_data(request):
                 return JsonResponse({"error": f"Invalid date format: {str(e)}"}, status=400)
 
             collection.insert_one(data)
-            return JsonResponse({"message": "Data saved successfully", "contestId": contest_id}, status=200)
+            return JsonResponse({
+                "message": "Data saved successfully",
+                "contestId": contest_id
+            }, status=200)
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
+
     return JsonResponse({"error": "Invalid request method"}, status=400)
 
 @csrf_exempt
