@@ -328,68 +328,63 @@ def save_data(request):
         return JsonResponse({"error": str(e)}, status=500)
         
 @csrf_exempt
-def save_section_data(request):
+def save_assessment_questions(request):
     """
-    Save section data for a contest with robust token handling.
-
-    Args:
-        request: The HTTP request object containing the section data in the request body.
-
-    Returns:
-        JsonResponse: A JSON response indicating success or an error message if the data is invalid or missing.
+    Save generated questions to an assessment with robust token handling.
     """
     if request.method != "POST":
-        return JsonResponse({"error": "Invalid request method"}, status=400)
+        return JsonResponse({"error": "Method not allowed"}, status=405)
     
     try:
-        # Multi-source token retrieval
+        # Get token from multiple sources
         jwt_token = None
         
-        # Try cookies
+        # 1. Try cookies
         for cookie_name in ["jwt", "access_token", "token", "stafftoken"]:
             if cookie_name in request.COOKIES:
                 jwt_token = request.COOKIES.get(cookie_name)
                 break
                 
-        # Try header
+        # 2. Try authorization header
         if not jwt_token:
             auth_header = request.headers.get('Authorization', '')
             if auth_header.startswith('Bearer '):
                 jwt_token = auth_header.split(' ')[1]
         
-        # Try body
+        # 3. Try request body
         if not jwt_token:
             try:
-                data = json.loads(request.body)
-                for field in ['token', 'stafftoken', 'access_token', 'jwt']:
-                    if field in data:
-                        jwt_token = data.get(field)
+                body_data = json.loads(request.body)
+                for token_field in ['token', 'stafftoken', 'access_token', 'jwt']:
+                    if token_field in body_data:
+                        jwt_token = body_data.get(token_field)
                         if jwt_token:
                             break
             except:
                 pass
-                
+        
         if not jwt_token:
-            return JsonResponse({"error": "Authentication credentials were not provided."}, status=401)
+            return JsonResponse({"error": "Authentication required"}, status=401)
         
         # Clean token
-        jwt_token = jwt_token.strip().replace('"', '').replace("'", "") if isinstance(jwt_token, str) else jwt_token
+        if isinstance(jwt_token, str):
+            jwt_token = jwt_token.strip().replace('"', '').replace("'", "")
         
         # Try multiple algorithms and secrets
         decoded_token = None
         last_error = None
         
-        # Array of possible algorithms to try
+        # Algorithms to try
         algorithms = ["HS256", "RS256"]
         if JWT_ALGORITHM:
-            algorithms.insert(0, JWT_ALGORITHM)  # Try configured algorithm first
+            algorithms.insert(0, JWT_ALGORITHM)
             
         # Secrets to try
         secrets = [JWT_SECRET]
         if SECRET_KEY and SECRET_KEY != JWT_SECRET:
             secrets.append(SECRET_KEY)
             
-        # Try each combination of secret and algorithm
+        # Try each combination
         for secret in secrets:
             if not secret:
                 continue
@@ -397,18 +392,18 @@ def save_section_data(request):
             for alg in algorithms:
                 try:
                     decoded_token = jwt.decode(jwt_token, secret, algorithms=[alg])
-                    break  # Success - exit loop
+                    break
                 except Exception as e:
                     last_error = e
                     continue
                     
             if decoded_token:
-                break  # Found a working combination
+                break
                 
         if not decoded_token:
-            return JsonResponse({"error": f"Token validation failed: {str(last_error)}"}, status=401)
+            return JsonResponse({"error": f"Invalid or expired token: {str(last_error)}"}, status=401)
             
-        # Extract staff_id - check multiple possible field names
+        # Extract staff_id
         staff_id = None
         for field in ['staff_user', 'staff_id', 'user_id', 'id', 'sub']:
             if field in decoded_token:
@@ -418,99 +413,73 @@ def save_section_data(request):
                     
         if not staff_id:
             return JsonResponse({"error": "Invalid token payload: missing staff ID"}, status=401)
-            
-        # Find staff details
-        try:
-            # Convert to ObjectId if it's a string and valid format
-            if isinstance(staff_id, str) and len(staff_id) == 24:
-                try:
-                    staff_id_obj = ObjectId(staff_id)
-                except:
-                    staff_id_obj = staff_id
-            else:
-                staff_id_obj = staff_id
-                
-            staff_details = staff_collection.find_one({"_id": staff_id_obj})
-            
-            # Try alternate fields if first attempt fails
-            if not staff_details:
-                staff_details = staff_collection.find_one({"staffId": staff_id})
-                
-            if not staff_details:
-                return JsonResponse({"error": "Staff not found"}, status=404)
-                
-        except Exception as e:
-            return JsonResponse({"error": f"Database error: {str(e)}"}, status=500)
         
-        # Parse request data
-        try:
-            data = json.loads(request.body)
-        except json.JSONDecodeError:
-            return JsonResponse({"error": "Invalid JSON data"}, status=400)
-        
-        # Add staff info to data
-        data["staffId"] = staff_id
-        if staff_details:
-            data.update({
-                "department": staff_details.get("department"),
-                "college": staff_details.get("collegename"),
-                "name": staff_details.get("full_name")
-            })
+        # Process request data
+        data = json.loads(request.body)
+        section_name = data.get('sectionName')
+        num_questions = data.get('numQuestions')
+        section_duration = data.get('sectionDuration')
+        mark_allotment = data.get('markAllotment')
+        pass_percentage = data.get('passPercentage')
+        time_restriction = data.get('timeRestriction')
+        questions = data.get('questions', [])
 
-        # Validate contest ID
-        contest_id = data.get("contestId")
-        if not contest_id:
-            return JsonResponse({"error": "contestId is required"}, status=400)
-            
-        # Validate assessment overview
-        if "assessmentOverview" not in data or "registrationStart" not in data["assessmentOverview"] or "registrationEnd" not in data["assessmentOverview"]:
-            return JsonResponse({"error": "'registrationStart' or 'registrationEnd' is missing in 'assessmentOverview'"}, status=400)
-            
-        # Handle date conversion
+        if not questions:
+            return JsonResponse({"error": "No questions provided"}, status=400)
+
+        # Find the assessment
         try:
-            # Try multiple date formats for each date field
-            for field in ["registrationStart", "registrationEnd"]:
-                date_str = data["assessmentOverview"][field]
-                
-                if isinstance(date_str, str):
-                    try:
-                        # Try direct ISO format
-                        data["assessmentOverview"][field] = datetime.datetime.fromisoformat(date_str)
-                    except ValueError:
-                        # Clean the date string and try again
-                        clean_date = date_str.replace('Z', '')
-                        if '+' in clean_date:
-                            clean_date = clean_date.split('+')[0]
-                        if '.' in clean_date:
-                            clean_date = clean_date.split('.')[0]
-                            
-                        # For YYYY-MM-DDThh:mm format (without seconds)
-                        if len(clean_date) == 16:
-                            clean_date += ":00"
-                            
-                        data["assessmentOverview"][field] = datetime.datetime.fromisoformat(clean_date)
-        except ValueError as e:
-            return JsonResponse({"error": f"Invalid date format: {str(e)}"}, status=400)
-            
-        # Insert data
-        try:
-            collection.insert_one(data)
+            assessment = collection.find_one(
+                {"staffId": staff_id},
+                sort=[("_id", -1)]
+            )
         except Exception as e:
             return JsonResponse({"error": f"Database error: {str(e)}"}, status=500)
-            
-        # Return success response
+
+        if not assessment:
+            return JsonResponse({"error": "No assessment found"}, status=404)
+
+        # Format questions
+        formatted_questions = [{
+            "question_type": "Multiple Choice",
+            "question": q["question"],
+            "options": q["options"],
+            "answer": q["correctAnswer"] if "correctAnswer" in q else q["answer"]
+        } for q in questions]
+
+        # Update the database
+        try:
+            result = collection.update_one(
+                {"_id": assessment["_id"]},
+                {
+                    "$push": {
+                        "sections": {
+                            "sectionName": section_name,
+                            "numQuestions": num_questions,
+                            "sectionDuration": section_duration,
+                            "markAllotment": mark_allotment,
+                            "passPercentage": pass_percentage,
+                            "timeRestriction": time_restriction,
+                            "questions": formatted_questions
+                        }
+                    },
+                    "$inc": {"no_of_section": 1}
+                }
+            )
+
+            if result.modified_count == 0:
+                return JsonResponse({"error": "Failed to update assessment"}, status=400)
+        except Exception as e:
+            return JsonResponse({"error": f"Database update error: {str(e)}"}, status=500)
+
         return JsonResponse({
-            "message": "Data saved successfully", 
-            "contestId": contest_id,
-            "staffDetails": {
-                "name": staff_details.get("full_name", ""),
-                "department": staff_details.get("department", []),
-                "college": staff_details.get("collegename", "")
-            }
-        }, status=200)
-        
+            "success": True,
+            "message": "Questions saved successfully",
+            "sectionName": section_name
+        })
+
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        return JsonResponse({"error": f"Unexpected error: {str(e)}"}, status=500)
 
 @csrf_exempt
 def save_question(request):
