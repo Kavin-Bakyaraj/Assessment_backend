@@ -95,7 +95,8 @@ CORS_ALLOWED_ORIGINS = [
     "https://assessment-portal-psi.vercel.app",
     "https://assessment-portal-git-main-kavin0047s-projects.vercel.app",
     "https://assessment-portal-o9e1gzej3-kavin0047s-projects.vercel.app",
-    "https://assessmentbackend-production.up.railway.app"
+    "https://assessmentbackend-production.up.railway.app",
+    "http://snsassessment.s3-website-us-east-1.amazonaws.com"
 
 # Add the origin of your frontend application
 ]   
@@ -114,7 +115,8 @@ CSRF_TRUSTED_ORIGINS = [
     "https://assessment-portal-psi.vercel.app",
     "https://assessment-portal-git-main-kavin0047s-projects.vercel.app",
     "https://assessment-portal-o9e1gzej3-kavin0047s-projects.vercel.app",
-    "https://assessmentbackend-production.up.railway.app"
+    "https://assessmentbackend-production.up.railway.app",
+    "http://snsassessment.s3-website-us-east-1.amazonaws.com"
 ]
 
 DATABASES = {
@@ -177,8 +179,8 @@ REST_FRAMEWORK = {
     ),
 }
 
-CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://localhost:8000', 'https://portal-sigma-lac.vercel.app/', "http://localhost:5173", "http://localhost:5174","https://assessment-portal-psi.vercel.app", "https://assessment-portal-git-main-kavin0047s-projects.vercel.app","https://assessment-portal-o9e1gzej3-kavin0047s-projects.vercel.app","https://assessmentbackend-production.up.railway.app",]
-CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://localhost:8000', 'https://portal-sigma-lac.vercel.app/', "http://localhost:5173", "http://localhost:5174","https://assessment-portal-psi.vercel.app", "https://assessment-portal-git-main-kavin0047s-projects.vercel.app","https://assessment-portal-o9e1gzej3-kavin0047s-projects.vercel.app","https://assessmentbackend-production.up.railway.app",]
+CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://localhost:8000', 'https://portal-sigma-lac.vercel.app/', "http://localhost:5173", "http://localhost:5174","https://assessment-portal-psi.vercel.app", "https://assessment-portal-git-main-kavin0047s-projects.vercel.app","https://assessment-portal-o9e1gzej3-kavin0047s-projects.vercel.app","https://assessmentbackend-production.up.railway.app","http://snsassessment.s3-website-us-east-1.amazonaws.com"]
+CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://localhost:8000', 'https://portal-sigma-lac.vercel.app/', "http://localhost:5173", "http://localhost:5174","https://assessment-portal-psi.vercel.app", "https://assessment-portal-git-main-kavin0047s-projects.vercel.app","https://assessment-portal-o9e1gzej3-kavin0047s-projects.vercel.app","https://assessmentbackend-production.up.railway.app","http://snsassessment.s3-website-us-east-1.amazonaws.com"]
 CORS_ALLOW_CREDENTIALS = True
 
 
