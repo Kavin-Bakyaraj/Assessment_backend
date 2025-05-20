@@ -328,160 +328,6 @@ def save_data(request):
         return JsonResponse({"error": str(e)}, status=500)
         
 @csrf_exempt
-def save_assessment_questions(request):
-    """
-    Save generated questions to an assessment with robust token handling.
-    """
-    if request.method != "POST":
-        return JsonResponse({"error": "Method not allowed"}, status=405)
-    
-    try:
-        # Get token from multiple sources
-        jwt_token = None
-        
-        # 1. Try cookies
-        for cookie_name in ["jwt", "access_token", "token", "stafftoken"]:
-            if cookie_name in request.COOKIES:
-                jwt_token = request.COOKIES.get(cookie_name)
-                break
-                
-        # 2. Try authorization header
-        if not jwt_token:
-            auth_header = request.headers.get('Authorization', '')
-            if auth_header.startswith('Bearer '):
-                jwt_token = auth_header.split(' ')[1]
-        
-        # 3. Try request body
-        if not jwt_token:
-            try:
-                body_data = json.loads(request.body)
-                for token_field in ['token', 'stafftoken', 'access_token', 'jwt']:
-                    if token_field in body_data:
-                        jwt_token = body_data.get(token_field)
-                        if jwt_token:
-                            break
-            except:
-                pass
-        
-        if not jwt_token:
-            return JsonResponse({"error": "Authentication required"}, status=401)
-        
-        # Clean token
-        if isinstance(jwt_token, str):
-            jwt_token = jwt_token.strip().replace('"', '').replace("'", "")
-        
-        # Try multiple algorithms and secrets
-        decoded_token = None
-        last_error = None
-        
-        # Algorithms to try
-        algorithms = ["HS256", "RS256"]
-        if JWT_ALGORITHM:
-            algorithms.insert(0, JWT_ALGORITHM)
-            
-        # Secrets to try
-        secrets = [JWT_SECRET]
-        if SECRET_KEY and SECRET_KEY != JWT_SECRET:
-            secrets.append(SECRET_KEY)
-            
-        # Try each combination
-        for secret in secrets:
-            if not secret:
-                continue
-                
-            for alg in algorithms:
-                try:
-                    decoded_token = jwt.decode(jwt_token, secret, algorithms=[alg])
-                    break
-                except Exception as e:
-                    last_error = e
-                    continue
-                    
-            if decoded_token:
-                break
-                
-        if not decoded_token:
-            return JsonResponse({"error": f"Invalid or expired token: {str(last_error)}"}, status=401)
-            
-        # Extract staff_id
-        staff_id = None
-        for field in ['staff_user', 'staff_id', 'user_id', 'id', 'sub']:
-            if field in decoded_token:
-                staff_id = decoded_token.get(field)
-                if staff_id:
-                    break
-                    
-        if not staff_id:
-            return JsonResponse({"error": "Invalid token payload: missing staff ID"}, status=401)
-        
-        # Process request data
-        data = json.loads(request.body)
-        section_name = data.get('sectionName')
-        num_questions = data.get('numQuestions')
-        section_duration = data.get('sectionDuration')
-        mark_allotment = data.get('markAllotment')
-        pass_percentage = data.get('passPercentage')
-        time_restriction = data.get('timeRestriction')
-        questions = data.get('questions', [])
-
-        if not questions:
-            return JsonResponse({"error": "No questions provided"}, status=400)
-
-        # Find the assessment
-        try:
-            assessment = collection.find_one(
-                {"staffId": staff_id},
-                sort=[("_id", -1)]
-            )
-        except Exception as e:
-            return JsonResponse({"error": f"Database error: {str(e)}"}, status=500)
-
-        if not assessment:
-            return JsonResponse({"error": "No assessment found"}, status=404)
-
-        # Format questions
-        formatted_questions = [{
-            "question_type": "Multiple Choice",
-            "question": q["question"],
-            "options": q["options"],
-            "answer": q["correctAnswer"] if "correctAnswer" in q else q["answer"]
-        } for q in questions]
-
-        # Update the database
-        try:
-            result = collection.update_one(
-                {"_id": assessment["_id"]},
-                {
-                    "$push": {
-                        "sections": {
-                            "sectionName": section_name,
-                            "numQuestions": num_questions,
-                            "sectionDuration": section_duration,
-                            "markAllotment": mark_allotment,
-                            "passPercentage": pass_percentage,
-                            "timeRestriction": time_restriction,
-                            "questions": formatted_questions
-                        }
-                    },
-                    "$inc": {"no_of_section": 1}
-                }
-            )
-
-            if result.modified_count == 0:
-                return JsonResponse({"error": "Failed to update assessment"}, status=400)
-        except Exception as e:
-            return JsonResponse({"error": f"Database update error: {str(e)}"}, status=500)
-
-        return JsonResponse({
-            "success": True,
-            "message": "Questions saved successfully",
-            "sectionName": section_name
-        })
-
-    except Exception as e:
-        return JsonResponse({"error": f"Unexpected error: {str(e)}"}, status=500)
-
-@csrf_exempt
 def save_question(request):
     """
     Save questions for a contest.
@@ -1692,56 +1538,72 @@ def generate_questions(request):
 @csrf_exempt
 def save_assessment_questions(request):
     """
-    Save generated questions to an assessment.
-
-    Args:
-        request: The HTTP request object containing the questions in the request body.
-
-    Returns:
-        JsonResponse: A JSON response indicating success or an error message if the data is invalid or missing.
+    Save generated questions to an assessment with robust contestId handling.
     """
-    if request.method == "POST":
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    
+    print("--- Starting save_assessment_questions function ---")
+    
+    try:
+        # Parse request body
+        data = json.loads(request.body)
+        print(f"Request body keys: {list(data.keys())}")
+        
+        # Get contestId directly (the most important part)
+        contest_id = data.get('contestId')
+        if not contest_id:
+            print("No contestId found in request body")
+            return JsonResponse({"error": "Contest ID is required"}, status=400)
+        
+        print(f"Using contestId from request body: {contest_id}")
+        
+        # Process core data fields
+        section_name = data.get('sectionName')
+        num_questions = data.get('numQuestions')
+        section_duration = data.get('sectionDuration')
+        mark_allotment = data.get('markAllotment')
+        pass_percentage = data.get('passPercentage')
+        time_restriction = data.get('timeRestriction')
+        questions = data.get('questions', [])
+        
+        if not questions:
+            return JsonResponse({"error": "No questions provided"}, status=400)
+        
+        # Find the assessment by contestId
+        assessment = None
         try:
-            jwt_token = request.COOKIES.get("jwt")
-            if not jwt_token:
-                return JsonResponse({"error": "Authentication required"}, status=401)
-
-            try:
-                decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-            except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
-                return JsonResponse({"error": "Invalid or expired token"}, status=401)
-
-            staff_id = decoded_token.get("staff_user")
-            if not staff_id:
-                raise AuthenticationFailed("Invalid token payload.")
-
-            data = json.loads(request.body)
-            section_name = data.get('sectionName')
-            num_questions = data.get('numQuestions')
-            section_duration = data.get('sectionDuration')
-            mark_allotment = data.get('markAllotment')
-            pass_percentage = data.get('passPercentage')
-            time_restriction = data.get('timeRestriction')
-            questions = data.get('questions', [])
-
-            if not questions:
-                return JsonResponse({"error": "No questions provided"}, status=400)
-
-            assessment = collection.find_one(
-                {"staffId": staff_id},
-                sort=[("_id", -1)]
-            )
-
+            # First try with exact match
+            assessment = collection.find_one({"contestId": contest_id})
+            print(f"Looking up assessment by contestId: {contest_id}, Found: {assessment is not None}")
+            
+            # Try case-insensitive match if exact match fails
             if not assessment:
-                return JsonResponse({"error": "No assessment found"}, status=404)
+                assessments_list = list(collection.find())
+                for a in assessments_list:
+                    if a.get("contestId", "").lower() == contest_id.lower():
+                        assessment = a
+                        print(f"Found assessment with case-insensitive contestId match")
+                        break
+        except Exception as e:
+            print(f"Database error: {str(e)}")
+            return JsonResponse({"error": f"Database error: {str(e)}"}, status=500)
 
-            formatted_questions = [{
-                "question_type": "Multiple Choice",
-                "question": q["question"],
-                "options": q["options"],
-                "answer": q["correctAnswer"] if "correctAnswer" in q else q["answer"]
-            } for q in questions]
-
+        # If no assessment found, return user-friendly error
+        if not assessment:
+            print(f"No assessment found with contestId: {contest_id}")
+            return JsonResponse({"error": "No assessment found. Please provide a valid contestId."}, status=404)
+        
+        # Format questions
+        formatted_questions = [{
+            "question_type": "Multiple Choice",
+            "question": q["question"],
+            "options": q["options"],
+            "answer": q["correctAnswer"] if "correctAnswer" in q else q["answer"]
+        } for q in questions]
+        
+        # Update the database
+        try:
             result = collection.update_one(
                 {"_id": assessment["_id"]},
                 {
@@ -1759,21 +1621,29 @@ def save_assessment_questions(request):
                     "$inc": {"no_of_section": 1}
                 }
             )
-
+            
             if result.modified_count == 0:
+                print("Failed to update assessment - modified_count=0")
                 return JsonResponse({"error": "Failed to update assessment"}, status=400)
-
-            return JsonResponse({
-                "success": True,
-                "message": "Questions saved successfully",
-                "sectionName": section_name
-            })
-
+                
+            print("Successfully updated assessment with questions")
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
+            print(f"Database update error: {str(e)}")
+            return JsonResponse({"error": f"Database update error: {str(e)}"}, status=500)
 
-    return JsonResponse({"error": "Method not allowed"}, status=405)
-
+        return JsonResponse({
+            "success": True,
+            "message": "Questions saved successfully",
+            "sectionName": section_name
+        })
+        
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON in request body"}, status=400)
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        return JsonResponse({"error": f"An unexpected error occurred: {str(e)}"}, status=500)
+    
+    
 @api_view(['DELETE'])
 @permission_classes([AllowAny])
 def delete_contest_by_id(request, contest_id):
